@@ -18,7 +18,7 @@ export default function Icon() {
             <div
                 style={{
                     fontSize: 24,
-                    background: 'white',
+                    background: '#0f172a',
                     width: '100%',
                     height: '100%',
                     display: 'flex',
@@ -31,8 +31,8 @@ export default function Icon() {
 
                 {/* Simple SVG Shopping Bag representation for reliable rendering without dependencies */}
                 <svg
-                    width={25}
-                    height={25}
+                    width={32}
+                    height={32}
                     viewBox="0 0 1024 1024"
                     xmlns="http://www.w3.org/2000/svg"
                 >
