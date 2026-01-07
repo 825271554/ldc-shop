@@ -1,0 +1,141 @@
+'use server'
+
+import { auth } from "@/lib/auth"
+import { db } from "@/lib/db"
+import { products, cards } from "@/lib/db/schema"
+import { eq, sql } from "drizzle-orm"
+import { revalidatePath } from "next/cache"
+import { setSetting } from "@/lib/db/queries"
+
+// Check Admin Helper
+// Check Admin Helper
+export async function checkAdmin() {
+    const session = await auth()
+    const user = session?.user
+    const adminUsers = process.env.ADMIN_USERS?.toLowerCase().split(',') || []
+    if (!user || !user.username || !adminUsers.includes(user.username.toLowerCase())) {
+        throw new Error("Unauthorized")
+    }
+}
+
+export async function saveProduct(formData: FormData) {
+    await checkAdmin()
+
+    const id = formData.get('id') as string || `prod_${Date.now()}`
+    const name = formData.get('name') as string
+    const description = formData.get('description') as string
+    const price = formData.get('price') as string
+    const category = formData.get('category') as string
+    const image = formData.get('image') as string
+    const purchaseLimit = formData.get('purchaseLimit') ? parseInt(formData.get('purchaseLimit') as string) : null
+
+    await db.insert(products).values({
+        id, name, description, price, category, image, purchaseLimit
+    }).onConflictDoUpdate({
+        target: products.id,
+        set: { name, description, price, category, image, purchaseLimit }
+    })
+
+    revalidatePath('/admin')
+    revalidatePath('/')
+}
+
+export async function deleteProduct(id: string) {
+    await checkAdmin()
+    await db.delete(products).where(eq(products.id, id))
+    revalidatePath('/admin')
+    revalidatePath('/')
+}
+
+export async function toggleProductStatus(id: string, isActive: boolean) {
+    await checkAdmin()
+    await db.update(products).set({ isActive }).where(eq(products.id, id))
+    revalidatePath('/admin')
+    revalidatePath('/')
+}
+
+export async function reorderProduct(id: string, newOrder: number) {
+    await checkAdmin()
+    await db.update(products).set({ sortOrder: newOrder }).where(eq(products.id, id))
+    revalidatePath('/admin')
+    revalidatePath('/')
+}
+
+export async function addCards(formData: FormData) {
+    await checkAdmin()
+    const productId = formData.get('product_id') as string
+    const rawCards = formData.get('cards') as string
+
+    const cardList = rawCards.split('\n').map(c => c.trim()).filter(c => c)
+    if (cardList.length === 0) return
+
+    await db.insert(cards).values(
+        cardList.map(key => ({
+            productId,
+            cardKey: key
+        }))
+    )
+
+    revalidatePath('/admin')
+    revalidatePath('/')
+}
+
+export async function deleteCard(cardId: number) {
+    await checkAdmin()
+
+    // Only delete unused cards
+    const card = await db.query.cards.findFirst({
+        where: eq(cards.id, cardId)
+    })
+
+    if (!card) {
+        throw new Error("Card not found")
+    }
+
+    if (card.isUsed) {
+        throw new Error("Cannot delete used card")
+    }
+    if (card.reservedAt && card.reservedAt > new Date(Date.now() - 60 * 1000)) {
+        throw new Error("Cannot delete reserved card")
+    }
+
+    await db.delete(cards).where(eq(cards.id, cardId))
+
+    revalidatePath('/admin')
+    revalidatePath('/')
+}
+
+export async function saveShopName(rawName: string) {
+    await checkAdmin()
+
+    const name = rawName.trim()
+    if (!name) {
+        throw new Error("Shop name cannot be empty")
+    }
+    if (name.length > 64) {
+        throw new Error("Shop name is too long")
+    }
+
+    try {
+        await setSetting('shop_name', name)
+    } catch (error: any) {
+        // If settings table doesn't exist, create it and retry
+        if (error.message?.includes('does not exist') ||
+            error.code === '42P01' ||
+            JSON.stringify(error).includes('42P01')) {
+            await db.execute(sql`
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            `)
+            await setSetting('shop_name', name)
+        } else {
+            throw error
+        }
+    }
+
+    revalidatePath('/')
+    revalidatePath('/admin')
+}
