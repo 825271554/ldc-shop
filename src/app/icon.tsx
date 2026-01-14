@@ -18,31 +18,41 @@ export default function Icon() {
             <div
                 style={{
                     fontSize: 24,
-                    background: 'black',
+                    background: 'white',
                     width: '100%',
                     height: '100%',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     color: 'white',
-                    borderRadius: 8, // Rounded corners matching the site logo (approx)
+                    borderRadius: 8, // Rounded corners matching the site  (approx)
                 }}
             >
                 {/* Simple SVG Shopping Bag representation for reliable rendering without dependencies */}
                 <svg
+                    className="icon"
+                    viewBox="0 0 1024 1024"
+                    version="1.1"
                     xmlns="http://www.w3.org/2000/svg"
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+                    p-id="4526"
+                    width="32"
+                    height="32"
                 >
-                    <path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z" />
-                    <path d="M3 6h18" />
-                    <path d="M16 10a4 4 0 0 1-8 0" />
+                    <path d="M106.666667 405.333333h810.666666v405.333334H106.666667z" fill="#CFD8DC" p-id="4527"></path>
+                    <path d="M106.666667 810.666667h810.666666v85.333333H106.666667z" fill="#B0BEC5" p-id="4528"></path>
+                    <path d="M576 512h256v384H576z" fill="#455A64" p-id="4529"></path>
+                    <path d="M192 512h298.666667v234.666667H192z" fill="#E3F2FD" p-id="4530"></path>
+                    <path d="M213.333333 533.333333h256v192H213.333333z" fill="#1E88E5" p-id="4531"></path>
+                    <path d="M778.666667 714.666667c-6.4 0-10.666667 4.266667-10.666667 10.666666v42.666667c0 6.4 4.266667 10.666667 10.666667 10.666667s10.666667-4.266667 10.666666-10.666667v-42.666667c0-6.4-4.266667-10.666667-10.666666-10.666666z" fill="#90A4AE" p-id="4532"></path>
+                    <path d="M512 405.333333m-64 0a64 64 0 1 0 128 0 64 64 0 1 0-128 0Z" fill="#558B2F" p-id="4533"></path>
+                    <path d="M768 405.333333m-64 0a64 64 0 1 0 128 0 64 64 0 1 0-128 0Z" fill="#558B2F" p-id="4534"></path>
+                    <path d="M256 405.333333m-64 0a64 64 0 1 0 128 0 64 64 0 1 0-128 0Z" fill="#558B2F" p-id="4535"></path>
+                    <path d="M853.333333 128H170.666667c-23.466667 0-42.666667 19.2-42.666667 42.666667v64h768V170.666667c0-23.466667-19.2-42.666667-42.666667-42.666667zM448 234.666667h128v170.666666h-128zM789.333333 234.666667h-106.666666l21.333333 170.666666h128zM234.666667 234.666667h106.666666l-21.333333 170.666666H192z" fill="#7CB342" p-id="4536"></path>
+                    <path d="M640 405.333333m-64 0a64 64 0 1 0 128 0 64 64 0 1 0-128 0Z" fill="#FFA000" p-id="4537"></path>
+                    <path d="M960 405.333333c0 36.266667-27.733333 64-64 64s-64-27.733333-64-64 27.733333-64 64-64l64 64z" fill="#FFA000" p-id="4538"></path>
+                    <path d="M384 405.333333m-64 0a64 64 0 1 0 128 0 64 64 0 1 0-128 0Z" fill="#FFA000" p-id="4539"></path>
+                    <path d="M64 405.333333c0 36.266667 27.733333 64 64 64s64-27.733333 64-64-27.733333-64-64-64l-64 64z" fill="#FFA000" p-id="4540"></path>
+                    <path d="M682.666667 234.666667h-106.666667v170.666666h128zM896 234.666667h-106.666667l42.666667 170.666666h128zM341.333333 234.666667h106.666667v170.666666h-128zM128 234.666667h106.666667l-42.666667 170.666666H64z" fill="#FFC107" p-id="4541"></path>
                 </svg>
             </div>
         ),
