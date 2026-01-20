@@ -44,11 +44,19 @@ export function AdminRefundsContent({ requests }: { requests: any[] }) {
     const note = prompt(t('admin.refunds.adminNotePrompt')) || ''
     try {
       if (action === 'approve') {
-        await adminApproveRefund(id, note)
+        const result = await adminApproveRefund(id, note)
+        if (result?.processed) {
+          toast.success(t('admin.refunds.autoRefundSuccess'))
+        } else {
+          toast.success(t('admin.refunds.autoRefundPending'))
+          if (result?.error) {
+            toast.error(result.error)
+          }
+        }
       } else {
         await adminRejectRefund(id, note)
+        toast.success(t('common.success'))
       }
-      toast.success(t('common.success'))
     } catch (e: any) {
       toast.error(e.message)
     }
@@ -129,4 +137,3 @@ export function AdminRefundsContent({ requests }: { requests: any[] }) {
     </div>
   )
 }
-

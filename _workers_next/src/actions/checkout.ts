@@ -3,20 +3,46 @@
 import { auth } from "@/lib/auth"
 import { db } from "@/lib/db"
 import { products, cards, orders, loginUsers } from "@/lib/db/schema"
-import { cancelExpiredOrders } from "@/lib/db/queries"
+import { cancelExpiredOrders, recalcProductAggregates, getLoginUserEmail, createUserNotification } from "@/lib/db/queries"
 import { generateOrderId, generateSign } from "@/lib/crypto"
 import { eq, sql, and, or, isNull, lt } from "drizzle-orm"
 import { cookies } from "next/headers"
+import { revalidateTag } from "next/cache"
+import { notifyAdminPaymentSuccess } from "@/lib/notifications"
+import { sendOrderEmail } from "@/lib/email"
+
+const MAX_ORDER_QUANTITY = 10000
 
 export async function createOrder(productId: string, quantity: number = 1, email?: string, usePoints: boolean = false) {
     const session = await auth()
     const user = session?.user
+    const normalizedQuantity = Number(quantity)
+
+    if (!Number.isFinite(normalizedQuantity) || !Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0) {
+        return { success: false, error: 'buy.invalidQuantity' }
+    }
+
+    quantity = normalizedQuantity
 
     // 1. Get Product
     const product = await db.query.products.findFirst({
-        where: eq(products.id, productId)
+        where: eq(products.id, productId),
+        columns: {
+            id: true,
+            name: true,
+            price: true,
+            purchaseLimit: true,
+            isShared: true
+        }
     })
     if (!product) return { success: false, error: 'buy.productNotFound' }
+
+    const purchaseLimit = product.purchaseLimit && product.purchaseLimit > 0 ? product.purchaseLimit : null
+    const maxQuantity = purchaseLimit ?? MAX_ORDER_QUANTITY
+
+    if (quantity > maxQuantity) {
+        return { success: false, error: purchaseLimit ? 'buy.limitExceeded' : 'buy.quantityTooLarge' }
+    }
 
     // 2. Check Blocked Status
     if (user?.id) {
@@ -54,8 +80,23 @@ export async function createOrder(productId: string, quantity: number = 1, email
     }
 
     const isZeroPrice = finalAmount <= 0
+    const profileEmail = (!email && user?.id) ? await getLoginUserEmail(user.id) : null
+    const resolvedEmail = email || profileEmail || user?.email || null
 
+    // 2. Check Stock
     const getAvailableStock = async () => {
+        // For shared products, we just need ANY unused card to exist. Reservation status doesn't matter since we don't reserve.
+        if (product.isShared) {
+            const result = await db.select({ count: sql<number>`count(*)` })
+                .from(cards)
+                .where(and(
+                    eq(cards.productId, productId),
+                    or(isNull(cards.isUsed), eq(cards.isUsed, false))
+                ));
+            // If we have at least 1 card, treat as infinite stock (999999)
+            return (result[0]?.count || 0) > 0 ? 999999 : 0;
+        }
+
         // SQLite count returns number directly usually
         const result = await db.select({ count: sql<number>`count(*)` })
             .from(cards)
@@ -67,7 +108,6 @@ export async function createOrder(productId: string, quantity: number = 1, email
         return result[0]?.count || 0
     }
 
-    // 2. Check Stock
     let stock = await getAvailableStock()
 
     if (stock < quantity) {
@@ -116,114 +156,147 @@ export async function createOrder(productId: string, quantity: number = 1, email
 
         const reservedCards: { id: number, key: string }[] = []
 
-        for (let i = 0; i < quantity; i++) {
-            let attempts = 0
-            const maxAttempts = 3
-            let success = false
+        // If shared product, SKIP reservation logic. We just confirm we have stock (already checked above)
+        if (product.isShared) {
+            // For shared products, we don't lock cards. We just proceed.
+            // But we need to pass a valid key to 'createOrderRecord' if it's a zero-price order for immediate fulfillment?
+            // Actually createOrderRecord handles fulfillment logic slightly differently for zero price.
+            // If zero price + shared => we need to grab a key NOW to deliver it?
 
-            while (attempts < maxAttempts && !success) {
-                attempts++
+            // However, createOrderRecord logic (lines 246-256) marks cards as USED if zero price. 
+            // We MUST careful with shared products + zero price.
 
-                // A. Try strictly free card
-                // D1: Use separate SELECT then UPDATE (no subquery UPDATE)
-                const freeCards = await db.select({ id: cards.id, cardKey: cards.cardKey })
-                    .from(cards)
-                    .where(and(
-                        eq(cards.productId, productId),
-                        or(eq(cards.isUsed, false), isNull(cards.isUsed)),
-                        isNull(cards.reservedAt)
-                    ))
-                    .limit(1);
+            // Let's grab ONE key for reference (randomly) just in case
+            const availableCard = await db.select({ id: cards.id, cardKey: cards.cardKey })
+                .from(cards)
+                .where(and(
+                    eq(cards.productId, productId),
+                    or(isNull(cards.isUsed), eq(cards.isUsed, false))
+                ))
+                .orderBy(sql`RANDOM()`)
+                .limit(1);
 
-                if (freeCards.length > 0) {
-                    const freeCard = freeCards[0];
-                    // Try to claim it atomically
-                    await db.update(cards)
-                        .set({ reservedOrderId: orderId, reservedAt: new Date() })
-                        .where(and(
-                            eq(cards.id, freeCard.id),
-                            isNull(cards.reservedAt) // Double-check still free
-                        ));
+            if (availableCard.length > 0) {
+                // We push the SAME key 'quantity' times
+                for (let i = 0; i < quantity; i++) {
+                    reservedCards.push({ id: availableCard[0].id, key: availableCard[0].cardKey });
+                }
+            } else {
+                throw new Error('stock_locked') // Should be caught by stock check, but race condition possible
+            }
 
-                    // Verify we got it
-                    const claimed = await db.select({ id: cards.id, cardKey: cards.cardKey })
+            // We do NOT update DB to reserve.
+        } else {
+            // Normal Product Reservation Logic
+            for (let i = 0; i < quantity; i++) {
+                let attempts = 0
+                const maxAttempts = 3
+                let success = false
+
+                while (attempts < maxAttempts && !success) {
+                    attempts++
+
+                    // A. Try strictly free card
+                    // D1: Use separate SELECT then UPDATE (no subquery UPDATE)
+                    const freeCards = await db.select({ id: cards.id, cardKey: cards.cardKey })
                         .from(cards)
-                        .where(and(eq(cards.id, freeCard.id), eq(cards.reservedOrderId, orderId)))
+                        .where(and(
+                            eq(cards.productId, productId),
+                            or(eq(cards.isUsed, false), isNull(cards.isUsed)),
+                            isNull(cards.reservedAt)
+                        ))
                         .limit(1);
 
-                    if (claimed.length > 0) {
-                        reservedCards.push({ id: claimed[0].id, key: claimed[0].cardKey });
-                        success = true;
-                        continue;
-                    }
-                }
+                    if (freeCards.length > 0) {
+                        const freeCard = freeCards[0];
+                        // Try to claim it atomically
+                        await db.update(cards)
+                            .set({ reservedOrderId: orderId, reservedAt: new Date() })
+                            .where(and(
+                                eq(cards.id, freeCard.id),
+                                isNull(cards.reservedAt) // Double-check still free
+                            ));
 
-                // B. Fallback: Expired reservation
-                const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-                const expiredCandidates = await db.select({
-                    id: cards.id,
-                    cardKey: cards.cardKey,
-                    reservedOrderId: cards.reservedOrderId
-                })
-                    .from(cards)
-                    .where(and(
-                        eq(cards.productId, productId),
-                        or(eq(cards.isUsed, false), isNull(cards.isUsed)),
-                        lt(cards.reservedAt, fiveMinutesAgo)
-                    ))
-                    .limit(1);
+                        // Verify we got it
+                        const claimed = await db.select({ id: cards.id, cardKey: cards.cardKey })
+                            .from(cards)
+                            .where(and(eq(cards.id, freeCard.id), eq(cards.reservedOrderId, orderId)))
+                            .limit(1);
 
-                if (expiredCandidates.length === 0) {
-                    break
-                }
-
-                const candidate = expiredCandidates[0]
-                const candidateCardId = candidate.id
-                const candidateOrderId = candidate.reservedOrderId
-
-                let isPaid = false
-                try {
-                    if (candidateOrderId) {
-                        const statusRes = await queryOrderStatus(candidateOrderId)
-                        if (statusRes.success && statusRes.status === 1) {
-                            isPaid = true
+                        if (claimed.length > 0) {
+                            reservedCards.push({ id: claimed[0].id, key: claimed[0].cardKey });
+                            success = true;
+                            continue;
                         }
                     }
-                } catch {
-                    // ignore
-                }
 
-                if (isPaid) {
-                    await db.update(cards)
-                        .set({ isUsed: true, usedAt: new Date() })
-                        .where(eq(cards.id, candidateCardId));
-                    await db.update(orders)
-                        .set({ status: 'paid', paidAt: new Date() })
-                        .where(and(eq(orders.orderId, candidateOrderId!), eq(orders.status, 'pending')));
-                    continue
-                } else {
-                    // Steal the expired card
-                    await db.update(cards)
-                        .set({ reservedOrderId: orderId, reservedAt: new Date() })
-                        .where(eq(cards.id, candidateCardId));
-
-                    // Verify we got it
-                    const stolen = await db.select({ id: cards.id, cardKey: cards.cardKey })
+                    // B. Fallback: Expired reservation
+                    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+                    const expiredCandidates = await db.select({
+                        id: cards.id,
+                        cardKey: cards.cardKey,
+                        reservedOrderId: cards.reservedOrderId
+                    })
                         .from(cards)
-                        .where(and(eq(cards.id, candidateCardId), eq(cards.reservedOrderId, orderId)))
+                        .where(and(
+                            eq(cards.productId, productId),
+                            or(eq(cards.isUsed, false), isNull(cards.isUsed)),
+                            lt(cards.reservedAt, fiveMinutesAgo)
+                        ))
                         .limit(1);
 
-                    if (stolen.length > 0) {
-                        reservedCards.push({ id: stolen[0].id, key: stolen[0].cardKey });
-                        success = true;
+                    if (expiredCandidates.length === 0) {
+                        break
                     }
-                }
-            } // end while
 
-            if (!success) {
-                throw new Error('stock_locked')
-            }
-        } // end for
+                    const candidate = expiredCandidates[0]
+                    const candidateCardId = candidate.id
+                    const candidateOrderId = candidate.reservedOrderId
+
+                    let isPaid = false
+                    try {
+                        if (candidateOrderId) {
+                            const statusRes = await queryOrderStatus(candidateOrderId)
+                            if (statusRes.success && statusRes.status === 1) {
+                                isPaid = true
+                            }
+                        }
+                    } catch {
+                        // ignore
+                    }
+
+                    if (isPaid) {
+                        await db.update(cards)
+                            .set({ isUsed: true, usedAt: new Date() })
+                            .where(eq(cards.id, candidateCardId));
+                        await db.update(orders)
+                            .set({ status: 'paid', paidAt: new Date() })
+                            .where(and(eq(orders.orderId, candidateOrderId!), eq(orders.status, 'pending')));
+                        continue
+                    } else {
+                        // Steal the expired card
+                        await db.update(cards)
+                            .set({ reservedOrderId: orderId, reservedAt: new Date() })
+                            .where(eq(cards.id, candidateCardId));
+
+                        // Verify we got it
+                        const stolen = await db.select({ id: cards.id, cardKey: cards.cardKey })
+                            .from(cards)
+                            .where(and(eq(cards.id, candidateCardId), eq(cards.reservedOrderId, orderId)))
+                            .limit(1);
+
+                        if (stolen.length > 0) {
+                            reservedCards.push({ id: stolen[0].id, key: stolen[0].cardKey });
+                            success = true;
+                        }
+                    }
+                } // end while
+
+                if (!success) {
+                    throw new Error('stock_locked')
+                }
+            } // end for
+        }
 
         const joinedKeys = reservedCards.map(c => c.key).join('\n')
 
@@ -231,66 +304,146 @@ export async function createOrder(productId: string, quantity: number = 1, email
     };
 
     const createOrderRecord = async (reservedCards: any[], joinedKeys: string, isZeroPrice: boolean, pointsToUse: number, finalAmount: number, user: any, username: any, email: any, product: any, orderId: string, qty: number) => {
-        if (pointsToUse > 0) {
-            const updatedUser = await db.update(loginUsers)
-                .set({ points: sql`${loginUsers.points} - ${pointsToUse}` })
-                .where(and(eq(loginUsers.userId, user!.id!), sql`${loginUsers.points} >= ${pointsToUse}`))
-                .returning({ points: loginUsers.points });
+        let pointsDeducted = false
+        let orderInserted = false
 
-            if (!updatedUser.length) {
-                throw new Error('insufficient_points');
+        try {
+            if (pointsToUse > 0) {
+                const updatedUser = await db.update(loginUsers)
+                    .set({ points: sql`${loginUsers.points} - ${pointsToUse}` })
+                    .where(and(eq(loginUsers.userId, user!.id!), sql`${loginUsers.points} >= ${pointsToUse}`))
+                    .returning({ points: loginUsers.points });
+
+                if (!updatedUser.length) {
+                    throw new Error('insufficient_points');
+                }
+
+                pointsDeducted = true
             }
-        }
 
-        if (isZeroPrice) {
-            const cardIds = reservedCards.map(c => c.id)
-            if (cardIds.length > 0) {
-                for (const cid of cardIds) {
-                    await db.update(cards).set({
-                        isUsed: true,
-                        usedAt: new Date(),
-                        reservedOrderId: null,
-                        reservedAt: null
-                    }).where(eq(cards.id, cid));
+            if (isZeroPrice) {
+                const cardIds = reservedCards.map(c => c.id)
+                if (cardIds.length > 0) {
+                    if (product.isShared) {
+                        // For shared products, DO NOT mark as used.
+                        // Just update order status (below)
+                    } else {
+                        for (const cid of cardIds) {
+                            await db.update(cards).set({
+                                isUsed: true,
+                                usedAt: new Date(),
+                                reservedOrderId: null,
+                                reservedAt: null
+                            }).where(eq(cards.id, cid));
+                        }
+                    }
+                }
+
+                await db.insert(orders).values({
+                    orderId,
+                    productId: product.id,
+                    productName: product.name,
+                    amount: finalAmount.toString(),
+                    email: resolvedEmail,
+                    userId: user?.id || null,
+                    username: username || user?.username || null,
+                    status: 'delivered',
+                    cardKey: joinedKeys,
+                    paidAt: new Date(),
+                    deliveredAt: new Date(),
+                    tradeNo: 'POINTS_REDEMPTION',
+                    pointsUsed: pointsToUse,
+                    quantity: qty,
+                    createdAt: new Date()
+                });
+                orderInserted = true
+
+                // Notify admin for points-only payment
+                console.log('[Checkout] Points payment completed, sending notification for order:', orderId);
+                try {
+                    await notifyAdminPaymentSuccess({
+                        orderId,
+                        productName: product.name,
+                        amount: pointsToUse.toString() + ' (积分)',
+                        username: username || user?.username,
+                        email: email || user?.email,
+                        tradeNo: 'POINTS_REDEMPTION'
+                    });
+                    console.log('[Checkout] Points payment notification sent successfully');
+                } catch (err) {
+                    console.error('[Notification] Points payment notify failed:', err);
+                }
+
+                // Send email with card keys
+                const orderEmail = resolvedEmail;
+                if (orderEmail) {
+                    await sendOrderEmail({
+                        to: orderEmail,
+                        orderId,
+                        productName: product.name,
+                        cardKeys: joinedKeys
+                    }).catch(err => console.error('[Email] Points payment email failed:', err));
+                }
+
+                if (user?.id) {
+                    await createUserNotification({
+                        userId: user.id,
+                        type: 'order_delivered',
+                        titleKey: 'profile.notifications.orderDeliveredTitle',
+                        contentKey: 'profile.notifications.orderDeliveredBody',
+                        data: {
+                            params: {
+                                orderId,
+                                productName: product.name
+                            },
+                            href: `/order/${orderId}`
+                        }
+                    })
+                }
+
+            } else {
+                await db.insert(orders).values({
+                    orderId,
+                    productId: product.id,
+                    productName: product.name,
+                    amount: finalAmount.toString(),
+                    email: resolvedEmail,
+                    userId: user?.id || null,
+                    username: username || user?.username || null,
+                    status: 'pending',
+                    pointsUsed: pointsToUse,
+                    currentPaymentId: orderId, // Store current payment ID
+                    quantity: qty,
+                    createdAt: new Date()
+                });
+                orderInserted = true
+            }
+        } catch (error) {
+            if (pointsDeducted && !orderInserted && user?.id) {
+                try {
+                    await db.update(loginUsers)
+                        .set({ points: sql`${loginUsers.points} + ${pointsToUse}` })
+                        .where(eq(loginUsers.userId, user.id))
+                } catch {
+                    // Best effort rollback
                 }
             }
-
-            await db.insert(orders).values({
-                orderId,
-                productId: product.id,
-                productName: product.name,
-                amount: finalAmount.toString(),
-                email: email || user?.email || null,
-                userId: user?.id || null,
-                username: username || user?.username || null,
-                status: 'delivered',
-                cardKey: joinedKeys,
-                paidAt: new Date(),
-                deliveredAt: new Date(),
-                tradeNo: 'POINTS_REDEMPTION',
-                pointsUsed: pointsToUse,
-                quantity: qty
-            });
-
-        } else {
-            await db.insert(orders).values({
-                orderId,
-                productId: product.id,
-                productName: product.name,
-                amount: finalAmount.toString(),
-                email: email || user?.email || null,
-                userId: user?.id || null,
-                username: username || user?.username || null,
-                status: 'pending',
-                pointsUsed: pointsToUse,
-                currentPaymentId: orderId, // Store current payment ID
-                quantity: qty
-            });
+            throw error;
         }
     }
 
     try {
         await reserveAndCreate();
+        try {
+            await recalcProductAggregates(productId)
+        } catch {
+            // best effort
+        }
+        try {
+            revalidateTag('home:products')
+        } catch {
+            // best effort
+        }
     } catch (error: any) {
         if (error?.message === 'stock_locked') {
             return { success: false, error: 'buy.stockLocked' };

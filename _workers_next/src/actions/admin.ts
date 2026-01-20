@@ -3,9 +3,10 @@
 import { auth } from "@/lib/auth"
 import { db } from "@/lib/db"
 import { products, cards, reviews, categories } from "@/lib/db/schema"
-import { eq, sql } from "drizzle-orm"
-import { revalidatePath } from "next/cache"
-import { setSetting } from "@/lib/db/queries"
+import { eq, sql, inArray, and, or, isNull, lte } from "drizzle-orm"
+import { sendTelegramMessage } from "@/lib/notifications"
+import { revalidatePath, revalidateTag } from "next/cache"
+import { setSetting, recalcProductAggregates, recalcProductAggregatesForMany } from "@/lib/db/queries"
 
 // Check Admin Helper
 // Check Admin Helper
@@ -21,7 +22,24 @@ export async function checkAdmin() {
 export async function saveProduct(formData: FormData) {
     await checkAdmin()
 
-    const id = formData.get('id') as string || `prod_${Date.now()}`
+    const existingId = formData.get('id') as string
+    const customSlug = (formData.get('slug') as string)?.trim()
+
+    // Determine product ID
+    let id: string
+    if (existingId) {
+        // Editing existing product - ALWAYS keep the original id (slug is read-only for existing products)
+        id = existingId
+    } else {
+        // New product - use custom slug or generate
+        id = customSlug || `prod_${Date.now()}`
+
+        // Validate slug format for new products
+        if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+            throw new Error("Slug can only contain letters, numbers, underscores and hyphens")
+        }
+    }
+
     const name = formData.get('name') as string
     const description = formData.get('description') as string
     const price = formData.get('price') as string
@@ -30,6 +48,8 @@ export async function saveProduct(formData: FormData) {
     const image = formData.get('image') as string
     const purchaseLimit = formData.get('purchaseLimit') ? parseInt(formData.get('purchaseLimit') as string) : null
     const isHot = formData.get('isHot') === 'on'
+    const isShared = formData.get('isShared') === 'on'
+    const purchaseWarning = (formData.get('purchaseWarning') as string | null)?.trim() || null
 
     const doSave = async () => {
         // Auto-create category if it doesn't exist
@@ -51,7 +71,9 @@ export async function saveProduct(formData: FormData) {
             category,
             image,
             purchaseLimit,
-            isHot
+            purchaseWarning,
+            isHot,
+            isShared
         }).onConflictDoUpdate({
             target: products.id,
             set: {
@@ -62,51 +84,86 @@ export async function saveProduct(formData: FormData) {
                 category,
                 image,
                 purchaseLimit,
-                isHot
+                purchaseWarning,
+                isHot,
+                isShared
             }
         })
+    }
+
+    // Ensure all product columns exist before saving
+    const ensureColumns = async () => {
+        try {
+            await db.run(sql.raw(`ALTER TABLE products ADD COLUMN compare_at_price TEXT`));
+        } catch { /* column exists */ }
+        try {
+            await db.run(sql.raw(`ALTER TABLE products ADD COLUMN is_hot INTEGER DEFAULT 0`));
+        } catch { /* column exists */ }
+        try {
+            await db.run(sql.raw(`ALTER TABLE products ADD COLUMN purchase_warning TEXT`));
+        } catch { /* column exists */ }
+        try {
+            await db.run(sql.raw(`ALTER TABLE products ADD COLUMN is_shared INTEGER DEFAULT 0`));
+        } catch { /* column exists */ }
     }
 
     try {
         await doSave()
     } catch (error: any) {
-        const errorString = JSON.stringify(error)
-        if (errorString.includes('42703')) {
-            try {
-                await db.run(sql.raw(`ALTER TABLE products ADD COLUMN compare_at_price TEXT`));
-            } catch { /* duplicate column */ }
-            try {
-                await db.run(sql.raw(`ALTER TABLE products ADD COLUMN is_hot INTEGER DEFAULT 0`));
-            } catch { /* duplicate column */ }
+        const errorString = JSON.stringify(error) + (error?.message || '')
+        if (errorString.includes('42703') || errorString.includes('no such column') || errorString.includes('SQLITE_ERROR')) {
+            await ensureColumns()
             await doSave()
         } else {
             throw error
         }
     }
 
-    revalidatePath('/admin')
+    try {
+        await recalcProductAggregates(id)
+    } catch {
+        // best effort
+    }
+
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
     revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:ratings')
+    revalidateTag('home:categories')
+    revalidateTag('home:product-categories')
 }
 
 export async function deleteProduct(id: string) {
     await checkAdmin()
     await db.delete(products).where(eq(products.id, id))
-    revalidatePath('/admin')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
     revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:ratings')
+    revalidateTag('home:categories')
+    revalidateTag('home:product-categories')
 }
 
 export async function toggleProductStatus(id: string, isActive: boolean) {
     await checkAdmin()
     await db.update(products).set({ isActive }).where(eq(products.id, id))
-    revalidatePath('/admin')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
     revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
 }
 
 export async function reorderProduct(id: string, newOrder: number) {
     await checkAdmin()
     await db.update(products).set({ sortOrder: newOrder }).where(eq(products.id, id))
-    revalidatePath('/admin')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
     revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
 }
 
 export async function addCards(formData: FormData) {
@@ -127,16 +184,30 @@ export async function addCards(formData: FormData) {
         // best effort
     }
 
-    await db.insert(cards).values(
-        cardList.map(key => ({
-            productId,
-            cardKey: key
-        }))
-    )
+    // D1 has a limit on SQL variables (around 100 bindings per query)
+    // Drizzle generates bindings for all columns (~8), so 100/8 ≈ 12 max
+    const BATCH_SIZE = 10
+    for (let i = 0; i < cardList.length; i += BATCH_SIZE) {
+        const batch = cardList.slice(i, i + BATCH_SIZE)
+        await db.insert(cards).values(
+            batch.map(key => ({
+                productId,
+                cardKey: key
+            }))
+        )
+    }
+    try {
+        await recalcProductAggregates(productId)
+    } catch {
+        // best effort
+    }
 
-    revalidatePath('/admin')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
     revalidatePath(`/admin/cards/${productId}`)
     revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
 }
 
 export async function deleteCard(cardId: number) {
@@ -159,10 +230,60 @@ export async function deleteCard(cardId: number) {
     }
 
     await db.delete(cards).where(eq(cards.id, cardId))
+    try {
+        await recalcProductAggregates(card.productId)
+    } catch {
+        // best effort
+    }
 
-    revalidatePath('/admin')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
     revalidatePath('/admin/cards')
     revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
+}
+
+export async function deleteCards(cardIds: number[]) {
+    await checkAdmin()
+
+    if (!cardIds.length) return
+
+    const BATCH_SIZE = 100
+    const productIds: string[] = []
+    for (let i = 0; i < cardIds.length; i += BATCH_SIZE) {
+        const batch = cardIds.slice(i, i + BATCH_SIZE)
+
+        try {
+            const rows = await db.select({ productId: cards.productId })
+                .from(cards)
+                .where(inArray(cards.id, batch))
+            productIds.push(...rows.map(r => r.productId))
+        } catch {
+            // best effort
+        }
+
+        await db.delete(cards)
+            .where(
+                and(
+                    inArray(cards.id, batch),
+                    or(isNull(cards.isUsed), eq(cards.isUsed, false)),
+                    or(isNull(cards.reservedAt), lte(cards.reservedAt, new Date(Date.now() - 60 * 1000)))
+                )
+            )
+    }
+    try {
+        await recalcProductAggregatesForMany(productIds)
+    } catch {
+        // best effort
+    }
+
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
+    revalidatePath('/admin/cards')
+    revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
 }
 
 export async function saveShopName(rawName: string) {
@@ -197,13 +318,58 @@ export async function saveShopName(rawName: string) {
     }
 
     revalidatePath('/')
-    revalidatePath('/admin')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
+}
+
+export async function saveShopDescription(rawDesc: string) {
+    await checkAdmin()
+
+    const desc = rawDesc.trim()
+    if (desc.length > 200) {
+        throw new Error("Description is too long")
+    }
+
+    await setSetting('shop_description', desc)
+    revalidatePath('/')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
+}
+
+export async function saveShopLogo(logoUrl: string) {
+    await checkAdmin()
+
+    const url = logoUrl.trim()
+    if (url && url.length > 500) {
+        throw new Error("Logo URL is too long")
+    }
+
+    await setSetting('shop_logo', url)
+    await setSetting('shop_logo_updated_at', String(Date.now()))
+    revalidatePath('/')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
+    revalidatePath('/admin/settings')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
+}
+
+export async function saveRefundReclaimCards(enabled: boolean) {
+    await checkAdmin()
+    await setSetting('refund_reclaim_cards', enabled ? 'true' : 'false')
+    revalidatePath('/admin/settings')
 }
 
 export async function deleteReview(reviewId: number) {
     await checkAdmin()
     await db.delete(reviews).where(eq(reviews.id, reviewId))
     revalidatePath('/admin/reviews')
+    revalidateTag('home:ratings')
+    revalidatePath('/')
 }
 
 export async function saveLowStockThreshold(raw: string) {
@@ -211,7 +377,10 @@ export async function saveLowStockThreshold(raw: string) {
     const n = Number.parseInt(String(raw || '').trim(), 10)
     const value = Number.isFinite(n) && n > 0 ? String(n) : '5'
     await setSetting('low_stock_threshold', value)
-    revalidatePath('/admin')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
 }
 
 export async function saveCheckinReward(raw: string) {
@@ -219,15 +388,97 @@ export async function saveCheckinReward(raw: string) {
     const n = Number.parseInt(String(raw || '').trim(), 10)
     const value = Number.isFinite(n) && n > 0 ? String(n) : '10'
     await setSetting('checkin_reward', value)
-    await setSetting('checkin_reward', value)
-    revalidatePath('/admin')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
 }
 
 export async function saveCheckinEnabled(enabled: boolean) {
     await checkAdmin()
     await setSetting('checkin_enabled', enabled ? 'true' : 'false')
-    revalidatePath('/admin')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
     revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
+}
+
+export async function saveNoIndex(enabled: boolean) {
+    await checkAdmin()
+    await setSetting('noindex_enabled', enabled ? 'true' : 'false')
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/settings')
+    revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
+}
+
+export async function saveShopFooter(footer: string) {
+    await checkAdmin()
+
+    const text = footer.trim()
+    if (text.length > 500) {
+        throw new Error("Footer text is too long")
+    }
+
+    await setSetting('shop_footer', text)
+    revalidatePath('/admin/settings')
+    revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
+}
+
+const VALID_THEME_COLORS = ['purple', 'indigo', 'blue', 'cyan', 'teal', 'green', 'lime', 'amber', 'orange', 'red', 'rose', 'pink', 'black']
+
+export async function saveThemeColor(color: string) {
+    await checkAdmin()
+
+    if (!VALID_THEME_COLORS.includes(color)) {
+        throw new Error("Invalid theme color")
+    }
+
+    await setSetting('theme_color', color)
+    revalidatePath('/admin/settings')
+    revalidatePath('/')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
+}
+
+export async function saveNotificationSettings(formData: FormData) {
+    await checkAdmin()
+
+    const token = (formData.get('telegramBotToken') as string || '').trim()
+    const chatId = (formData.get('telegramChatId') as string || '').trim()
+    const language = (formData.get('telegramLanguage') as string || 'zh').trim()
+
+    await setSetting('telegram_bot_token', token)
+    await setSetting('telegram_chat_id', chatId)
+    await setSetting('telegram_language', language)
+
+    // Email settings
+    const resendApiKey = (formData.get('resendApiKey') as string || '').trim()
+    const resendFromEmail = (formData.get('resendFromEmail') as string || '').trim()
+    const resendFromName = (formData.get('resendFromName') as string || '').trim()
+    const resendEnabled = formData.get('resendEnabled') === 'true'
+
+    await setSetting('resend_api_key', resendApiKey)
+    await setSetting('resend_from_email', resendFromEmail)
+    await setSetting('resend_from_name', resendFromName)
+    await setSetting('resend_enabled', resendEnabled ? 'true' : 'false')
+
+    revalidatePath('/admin/notifications')
+}
+
+export async function testNotification() {
+    await checkAdmin()
+    return await sendTelegramMessage("🔔 Test notification from LDC Shop")
+}
+
+export async function testEmailNotification(to: string) {
+    await checkAdmin()
+    const { testResendEmail } = await import("@/lib/email")
+    return await testResendEmail(to)
 }
 
 async function ensureCategoriesTable() {
@@ -263,6 +514,9 @@ export async function saveCategory(formData: FormData) {
 
     revalidatePath('/admin/categories')
     revalidatePath('/')
+    revalidateTag('home:categories')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
 }
 
 export async function deleteCategory(id: number) {
@@ -271,4 +525,7 @@ export async function deleteCategory(id: number) {
     await db.delete(categories).where(eq(categories.id, id))
     revalidatePath('/admin/categories')
     revalidatePath('/')
+    revalidateTag('home:categories')
+    revalidateTag('home:products')
+    revalidateTag('home:product-categories')
 }

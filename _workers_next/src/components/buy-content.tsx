@@ -20,7 +20,7 @@ import {
     DialogTrigger
 } from "@/components/ui/dialog"
 import ReactMarkdown from 'react-markdown'
-import { Share2 } from "lucide-react"
+import { Loader2, Minus, Plus, Share2 } from "lucide-react"
 import { toast } from "sonner"
 
 interface Product {
@@ -32,6 +32,7 @@ interface Product {
     image: string | null
     category: string | null
     purchaseLimit?: number | null
+    purchaseWarning?: string | null
     isHot?: boolean | null
 }
 
@@ -40,7 +41,7 @@ interface Review {
     username: string
     rating: number
     comment: string | null
-    createdAt: Date | string
+    createdAt: Date | string | null
 }
 
 interface BuyContentProps {
@@ -69,6 +70,8 @@ export function BuyContent({
     const { t } = useI18n()
     const [shareUrl, setShareUrl] = useState('')
     const [quantity, setQuantity] = useState(1)
+    const [showWarningDialog, setShowWarningDialog] = useState(false)
+    const [warningConfirmed, setWarningConfirmed] = useState(false)
 
     useEffect(() => {
         if (typeof window !== 'undefined') {
@@ -141,7 +144,7 @@ export function BuyContent({
                                         variant={stockCount > 0 ? "outline" : "destructive"}
                                         className={stockCount > 0 ? "border-primary/30 text-primary" : ""}
                                     >
-                                        {stockCount > 0 ? `${t('common.stock')}: ${stockCount}` : t('common.outOfStock')}
+                                        {stockCount >= 999999 ? `${t('common.stock')}: ${t('common.unlimited')}` : (stockCount > 0 ? `${t('common.stock')}: ${stockCount}` : t('common.outOfStock'))}
                                     </Badge>
                                     {typeof product.purchaseLimit === 'number' && product.purchaseLimit > 0 && (
                                         <Badge variant="secondary" className="mt-2">
@@ -189,7 +192,7 @@ export function BuyContent({
                         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
                             <div className="flex-1">
                                 {isLoggedIn ? (
-                                    stockCount > 0 ? (
+                                    stockCount > 0 || stockCount >= 999999 ? (
                                         <div className="flex flex-col gap-4 w-full sm:w-auto">
                                             <div className="flex items-center gap-3">
                                                 <div className="flex items-center border border-border rounded-md">
@@ -200,28 +203,30 @@ export function BuyContent({
                                                         onClick={() => setQuantity(Math.max(1, quantity - 1))}
                                                         disabled={quantity <= 1}
                                                     >
-                                                        -
+                                                        <Minus className="h-4 w-4" />
                                                     </Button>
                                                     <Input
-                                                        type="text"
+                                                        type="number"
                                                         value={quantity}
                                                         onChange={(e) => {
-                                                            const val = e.target.value
-                                                            if (val === '') {
-                                                                setQuantity(1)
-                                                                return
-                                                            }
-                                                            const num = parseInt(val)
-                                                            if (!isNaN(num)) {
-                                                                setQuantity(num)
+                                                            const val = parseInt(e.target.value) || 1
+                                                            // For shared products (stock >= 999999), max is only limited by purchaseLimit
+                                                            const maxStock = stockCount >= 999999 ? 999999 : (stockCount - lockedStockCount)
+                                                            const max = product.purchaseLimit && product.purchaseLimit > 0
+                                                                ? Math.min(maxStock, product.purchaseLimit)
+                                                                : maxStock
+
+                                                            if (val >= 1 && val <= max) {
+                                                                setQuantity(val)
                                                             }
                                                         }}
                                                         onBlur={(e) => {
                                                             let val = parseInt(e.target.value)
                                                             if (isNaN(val) || val < 1) val = 1
 
-                                                            const limit = product.purchaseLimit && product.purchaseLimit > 0 ? product.purchaseLimit : 999
-                                                            const max = Math.min(stockCount, limit)
+                                                            const maxStock = stockCount >= 999999 ? 999999 : (stockCount - lockedStockCount)
+                                                            const limit = product.purchaseLimit && product.purchaseLimit > 0 ? product.purchaseLimit : 999999
+                                                            const max = Math.min(maxStock, limit)
 
                                                             if (val > max) {
                                                                 val = max
@@ -231,31 +236,81 @@ export function BuyContent({
                                                             setQuantity(val)
                                                         }}
                                                         className="w-16 h-8 rounded-none border-x-0 text-center px-1 focus-visible:ring-0 focus-visible:border-primary"
+                                                        min={1}
+                                                        max={
+                                                            product.purchaseLimit && product.purchaseLimit > 0
+                                                                ? Math.min(stockCount >= 999999 ? 999999 : (stockCount - lockedStockCount), product.purchaseLimit)
+                                                                : (stockCount >= 999999 ? 999999 : (stockCount - lockedStockCount))
+                                                        }
                                                     />
                                                     <Button
                                                         variant="ghost"
                                                         size="icon"
                                                         className="h-8 w-8 rounded-none border-l border-border"
                                                         onClick={() => {
-                                                            const limit = product.purchaseLimit && product.purchaseLimit > 0 ? product.purchaseLimit : 999
-                                                            const max = Math.min(stockCount, limit)
-                                                            setQuantity(Math.min(max, quantity + 1))
+                                                            const maxStock = stockCount >= 999999 ? 999999 : (stockCount - lockedStockCount)
+                                                            const limit = product.purchaseLimit && product.purchaseLimit > 0 ? product.purchaseLimit : 999999
+                                                            const max = Math.min(maxStock, limit)
+
+                                                            if (quantity < max) {
+                                                                setQuantity(quantity + 1)
+                                                            }
                                                         }}
-                                                        disabled={quantity >= Math.min(stockCount, (product.purchaseLimit && product.purchaseLimit > 0 ? product.purchaseLimit : 999))}
+                                                        disabled={
+                                                            quantity >= (product.purchaseLimit && product.purchaseLimit > 0
+                                                                ? Math.min(stockCount >= 999999 ? 999999 : (stockCount - lockedStockCount), product.purchaseLimit)
+                                                                : (stockCount >= 999999 ? 999999 : (stockCount - lockedStockCount)))
+                                                        }
                                                     >
-                                                        +
+                                                        <Plus className="h-4 w-4" />
                                                     </Button>
                                                 </div>
                                                 <div className="text-sm font-medium text-muted-foreground">
                                                     {t('buy.modal.total')}: <span className="text-primary font-bold">{(Number(product.price) * quantity).toFixed(2)}</span>
                                                 </div>
                                             </div>
-                                            <BuyButton
-                                                productId={product.id}
-                                                price={product.price}
-                                                productName={product.name}
-                                                quantity={quantity}
-                                            />
+                                            {/* Purchase Warning Dialog */}
+                                            {product.purchaseWarning && !warningConfirmed ? (
+                                                <Dialog open={showWarningDialog} onOpenChange={setShowWarningDialog}>
+                                                    <DialogTrigger asChild>
+                                                        <Button size="lg" className="w-full md:w-auto bg-primary text-primary-foreground hover:bg-primary/90">
+                                                            {t('common.buyNow')}
+                                                        </Button>
+                                                    </DialogTrigger>
+                                                    <DialogContent>
+                                                        <DialogHeader>
+                                                            <DialogTitle className="flex items-center gap-2 text-amber-600">
+                                                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                                                </svg>
+                                                                {t('buy.warningTitle')}
+                                                            </DialogTitle>
+                                                        </DialogHeader>
+                                                        <div className="py-4 text-sm whitespace-pre-wrap">
+                                                            {product.purchaseWarning}
+                                                        </div>
+                                                        <div className="flex gap-2 justify-end">
+                                                            <Button variant="outline" onClick={() => setShowWarningDialog(false)}>
+                                                                {t('common.cancel')}
+                                                            </Button>
+                                                            <Button onClick={() => {
+                                                                setWarningConfirmed(true)
+                                                                setShowWarningDialog(false)
+                                                            }} className="bg-primary text-primary-foreground hover:bg-primary/90">
+                                                                {t('buy.confirmWarning')}
+                                                            </Button>
+                                                        </div>
+                                                    </DialogContent>
+                                                </Dialog>
+                                            ) : (
+                                                <BuyButton
+                                                    productId={product.id}
+                                                    price={product.price}
+                                                    productName={product.name}
+                                                    quantity={quantity}
+                                                    autoOpen={warningConfirmed && !!product.purchaseWarning}
+                                                />
+                                            )}
                                         </div>
                                     ) : (
                                         lockedStockCount > 0 ? (
@@ -356,7 +411,7 @@ export function BuyContent({
                 </Card>
 
                 {/* Reviews Section */}
-                <Card className="tech-card mt-8">
+                <Card id="reviews" className="tech-card mt-8 scroll-mt-20">
                     <CardHeader>
                         <div className="flex items-center justify-between">
                             <CardTitle className="flex items-center gap-3">

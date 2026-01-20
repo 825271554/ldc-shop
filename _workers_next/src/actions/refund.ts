@@ -3,7 +3,8 @@
 import { db } from "@/lib/db"
 import { cards, orders, refundRequests, loginUsers } from "@/lib/db/schema"
 import { and, eq, sql, inArray } from "drizzle-orm"
-import { revalidatePath } from "next/cache"
+import { revalidatePath, revalidateTag } from "next/cache"
+import { getSetting, recalcProductAggregates } from "@/lib/db/queries"
 
 export async function getRefundParams(orderId: string) {
     // Auth Check
@@ -58,7 +59,14 @@ export async function markOrderRefunded(orderId: string) {
     await db.update(orders).set({ status: 'refunded' }).where(eq(orders.orderId, orderId))
 
     // Reclaim card back to stock (best effort)
-    if (order.cardKey) {
+    let reclaimCards = true
+    try {
+        const v = await getSetting('refund_reclaim_cards')
+        reclaimCards = v !== 'false'
+    } catch {
+        reclaimCards = true
+    }
+    if (reclaimCards && order.cardKey) {
         const keys = order.cardKey.split('\n').map((k: string) => k.trim()).filter((k: string) => k !== '')
         if (keys.length > 0) {
             const uniqueKeys = Array.from(new Set(keys)) as string[]
@@ -78,6 +86,19 @@ export async function markOrderRefunded(orderId: string) {
     revalidatePath('/admin/orders')
     revalidatePath('/admin/refunds')
     revalidatePath(`/order/${orderId}`)
+
+    if (order.productId) {
+        try {
+            await recalcProductAggregates(order.productId)
+        } catch {
+            // best effort
+        }
+    }
+    try {
+        revalidateTag('home:products')
+    } catch {
+        // best effort
+    }
 
     return { success: true }
 }
