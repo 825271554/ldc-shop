@@ -3,7 +3,7 @@
 import { db } from "@/lib/db"
 import { cards, orders, refundRequests, loginUsers } from "@/lib/db/schema"
 import { and, eq, sql, inArray } from "drizzle-orm"
-import { revalidatePath, revalidateTag } from "next/cache"
+import { revalidatePath, updateTag } from "next/cache"
 import { getSetting, recalcProductAggregates } from "@/lib/db/queries"
 
 export async function getRefundParams(orderId: string) {
@@ -108,7 +108,7 @@ export async function markOrderRefunded(orderId: string) {
         }
     }
     try {
-        revalidateTag('home:products', 'max')
+        updateTag('home:products')
     } catch {
         // best effort
     }

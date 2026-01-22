@@ -5,10 +5,10 @@ import { orders, loginUsers } from "@/lib/db/schema"
 import { eq, sql } from "drizzle-orm"
 import { getLoginUserEmail, getSetting, getUserNotifications } from "@/lib/db/queries"
 import { ProfileContent } from "@/components/profile-content"
-
-export const dynamic = 'force-dynamic'
+import { unstable_noStore } from "next/cache"
 
 export default async function ProfilePage() {
+    unstable_noStore()
     const session = await auth()
     
     if (!session?.user?.id) {

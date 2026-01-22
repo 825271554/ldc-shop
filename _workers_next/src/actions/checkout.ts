@@ -7,7 +7,8 @@ import { cancelExpiredOrders, recalcProductAggregates, getLoginUserEmail, create
 import { generateOrderId, generateSign } from "@/lib/crypto"
 import { eq, sql, and, or, isNull, lt } from "drizzle-orm"
 import { cookies } from "next/headers"
-import { revalidateTag } from "next/cache"
+import { updateTag } from "next/cache"
+import { after } from "next/server"
 import { notifyAdminPaymentSuccess } from "@/lib/notifications"
 import { sendOrderEmail } from "@/lib/email"
 
@@ -362,48 +363,50 @@ export async function createOrder(productId: string, quantity: number = 1, email
                 });
                 orderInserted = true
 
-                // Notify admin for points-only payment
-                console.log('[Checkout] Points payment completed, sending notification for order:', orderId);
-                try {
-                    await notifyAdminPaymentSuccess({
-                        orderId,
-                        productName: product.name,
-                        amount: pointsToUse.toString() + ' (积分)',
-                        username: username || user?.username,
-                        email: email || user?.email,
-                        tradeNo: 'POINTS_REDEMPTION'
-                    });
-                    console.log('[Checkout] Points payment notification sent successfully');
-                } catch (err) {
-                    console.error('[Notification] Points payment notify failed:', err);
-                }
+                after(async () => {
+                    // Notify admin for points-only payment
+                    console.log('[Checkout] Points payment completed, sending notification for order:', orderId);
+                    try {
+                        await notifyAdminPaymentSuccess({
+                            orderId,
+                            productName: product.name,
+                            amount: pointsToUse.toString() + ' (积分)',
+                            username: username || user?.username,
+                            email: email || user?.email,
+                            tradeNo: 'POINTS_REDEMPTION'
+                        });
+                        console.log('[Checkout] Points payment notification sent successfully');
+                    } catch (err) {
+                        console.error('[Notification] Points payment notify failed:', err);
+                    }
 
-                // Send email with card keys
-                const orderEmail = resolvedEmail;
-                if (orderEmail) {
-                    await sendOrderEmail({
-                        to: orderEmail,
-                        orderId,
-                        productName: product.name,
-                        cardKeys: joinedKeys
-                    }).catch(err => console.error('[Email] Points payment email failed:', err));
-                }
+                    // Send email with card keys
+                    const orderEmail = resolvedEmail;
+                    if (orderEmail) {
+                        await sendOrderEmail({
+                            to: orderEmail,
+                            orderId,
+                            productName: product.name,
+                            cardKeys: joinedKeys
+                        }).catch(err => console.error('[Email] Points payment email failed:', err));
+                    }
 
-                if (user?.id) {
-                    await createUserNotification({
-                        userId: user.id,
-                        type: 'order_delivered',
-                        titleKey: 'profile.notifications.orderDeliveredTitle',
-                        contentKey: 'profile.notifications.orderDeliveredBody',
-                        data: {
-                            params: {
-                                orderId,
-                                productName: product.name
-                            },
-                            href: `/order/${orderId}`
-                        }
-                    })
-                }
+                    if (user?.id) {
+                        await createUserNotification({
+                            userId: user.id,
+                            type: 'order_delivered',
+                            titleKey: 'profile.notifications.orderDeliveredTitle',
+                            contentKey: 'profile.notifications.orderDeliveredBody',
+                            data: {
+                                params: {
+                                    orderId,
+                                    productName: product.name
+                                },
+                                href: `/order/${orderId}`
+                            }
+                        })
+                    }
+                })
 
             } else {
                 await db.insert(orders).values({
@@ -445,7 +448,7 @@ export async function createOrder(productId: string, quantity: number = 1, email
             // best effort
         }
         try {
-            revalidateTag('home:products', 'max')
+            updateTag('home:products')
         } catch {
             // best effort
         }

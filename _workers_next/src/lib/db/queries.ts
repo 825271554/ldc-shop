@@ -708,9 +708,9 @@ export async function getProductForAdmin(id: string) {
 }
 
 // Dashboard Stats
-export async function getDashboardStats() {
+export async function getDashboardStats(nowMs: number) {
     return await withOrderColumnFallback(async () => {
-        const now = new Date();
+        const now = new Date(nowMs);
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const weekStart = new Date(todayStart);
         weekStart.setDate(weekStart.getDate() - 7);
