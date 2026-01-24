@@ -30,9 +30,11 @@ This architecture aims to combine the development efficiency of Next.js with the
     - 🔍 **Search & Categories**: Client-side search and category filters.
     - 📢 **Announcement Banner**: Configurable homepage announcements.
     - 📝 **Markdown Descriptions**: Rich product descriptions.
+    - ⚠️ **Purchase Warning**: Optional pre-purchase warning modal.
     - 🔥 **Hot & Discounts**: Hot tag and original/discount price display.
     - ⭐ **Ratings & Reviews**: Verified buyers can rate and review.
     - 📦 **Stock & Sold Counters**: Real-time inventory and sales display.
+    - ♾️ **Shared Products**: Infinite-stock items for shared accounts/tutorials.
     - 🚫 **Purchase Limits**: Limit purchases by paid order count.
     - 🔢 **Quantity Selection**: Support purchasing multiple items.
     - 🏷️ **Custom Store Name**: Configurable store name in header/title.
@@ -45,6 +47,7 @@ This architecture aims to combine the development efficiency of Next.js with the
     - 🧾 **Order Center**: Order list and details pages.
     - 🔔 **Pending Order Alert**: Homepage banner reminds users of unpaid orders.
     - 🔄 **Refund Requests**: Users can submit refund requests for admin review.
+    - ✅ **Auto Refund**: Auto-trigger refunds after approval with error handling.
     - 💳 **Payment QR**: Admins can generate payment links/QR codes for direct payments.
 - **Admin Console**:
     - 📊 **Sales Stats**: Today/week/month/total overview.
@@ -58,6 +61,9 @@ This architecture aims to combine the development efficiency of Next.js with the
     - 📦 **Data Management**: Full SQL export (D1 compatible), import from Vercel SQL.
     - 📣 **Announcements**: Homepage announcement management.
     - 👥 **Customer Management**: View customers, manage points, block/unblock.
+    - 📨 **Message Center**: Send inbox messages to all users or specific users, with history.
+    - ⚙️ **Refund Settings**: Toggle whether refunded card keys return to stock.
+    - 🎨 **Theme & Footer**: Theme color selection and custom footer text.
     - 🔔 **Update Check**: Admin panel auto-detects new versions.
 - **Points System**:
     - ✨ **Daily Check-in**: Users earn points by daily check-in.
@@ -70,6 +76,8 @@ This architecture aims to combine the development efficiency of Next.js with the
 - **Notifications**:
     - 📧 **Delivery Email**: Send order delivery notifications via Resend.
     - 📢 **Telegram Notifications**: New order push notifications via Telegram Bot.
+    - 📮 **Inbox Notifications**: User inbox for delivery/refund/admin messages.
+    - 🌐 **LDC Navigator**: Opt-in store listing and public navigation page.
 
 ## 🚀 One-Click Deploy
 

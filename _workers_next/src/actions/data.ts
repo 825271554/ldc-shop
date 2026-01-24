@@ -2,7 +2,7 @@
 
 import { db } from "@/lib/db"
 import { sql } from "drizzle-orm"
-import { revalidatePath, revalidateTag } from "next/cache"
+import { revalidatePath, updateTag } from "next/cache"
 import { checkAdmin } from "@/actions/admin"
 import { recalcProductAggregatesForMany } from "@/lib/db/queries"
 import { products } from "@/lib/db/schema"
@@ -20,7 +20,7 @@ async function executeStatement(statement: string) {
 async function repairTimestamps() {
     const timestampColumns = [
         { table: 'products', cols: ['created_at'] },
-        { table: 'cards', cols: ['created_at', 'reserved_at', 'used_at'] },
+        { table: 'cards', cols: ['created_at', 'reserved_at', 'expires_at', 'used_at'] },
         { table: 'orders', cols: ['created_at', 'paid_at', 'delivered_at'] },
         { table: 'login_users', cols: ['created_at', 'last_login_at'] },
         { table: 'daily_checkins_v2', cols: ['created_at'] },
@@ -28,7 +28,11 @@ async function repairTimestamps() {
         { table: 'reviews', cols: ['created_at'] },
         { table: 'categories', cols: ['created_at', 'updated_at'] },
         { table: 'refund_requests', cols: ['created_at', 'updated_at', 'processed_at'] },
-        { table: 'user_notifications', cols: ['created_at'] }
+        { table: 'user_notifications', cols: ['created_at'] },
+        { table: 'user_messages', cols: ['created_at'] },
+        { table: 'admin_messages', cols: ['created_at'] },
+        { table: 'broadcast_messages', cols: ['created_at'] },
+        { table: 'broadcast_reads', cols: ['created_at'] },
     ]
 
     for (const { table, cols } of timestampColumns) {
@@ -82,6 +86,7 @@ export async function importData(formData: FormData) {
             sortOrder: 'sort_order',
             purchaseLimit: 'purchase_limit',
             purchaseWarning: 'purchase_warning',
+            visibilityLevel: 'visibility_level',
             stockCount: 'stock_count',
             lockedCount: 'locked_count',
             soldCount: 'sold_count',
@@ -92,6 +97,7 @@ export async function importData(formData: FormData) {
             isUsed: 'is_used',
             reservedOrderId: 'reserved_order_id',
             reservedAt: 'reserved_at',
+            expiresAt: 'expires_at',
             usedAt: 'used_at',
             // Orders
             orderId: 'order_id',
@@ -102,6 +108,7 @@ export async function importData(formData: FormData) {
             userId: 'user_id',
             pointsUsed: 'points_used',
             currentPaymentId: 'current_payment_id',
+            cardIds: 'card_ids',
             // Login Users
             lastLoginAt: 'last_login_at',
             isBlocked: 'is_blocked',
@@ -180,12 +187,12 @@ export async function importData(formData: FormData) {
         }
 
         revalidatePath('/admin')
-        revalidateTag('home:products')
-        revalidateTag('home:ratings')
-        revalidateTag('home:categories')
-        revalidateTag('home:announcement')
-        revalidateTag('home:product-categories')
-        revalidateTag('home:visitors')
+        updateTag('home:products')
+        updateTag('home:ratings')
+        updateTag('home:categories')
+        updateTag('home:announcement')
+        updateTag('home:product-categories')
+        updateTag('home:visitors')
         return { success: true, count: successCount, errors: errorCount }
     } catch (e: any) {
         return { success: false, error: e.message }

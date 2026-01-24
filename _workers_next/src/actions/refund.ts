@@ -1,48 +1,14 @@
 'use server'
 
 import { db } from "@/lib/db"
-import { cards, orders, refundRequests, loginUsers } from "@/lib/db/schema"
+import { cards, orders, refundRequests, loginUsers, products } from "@/lib/db/schema"
 import { and, eq, sql, inArray } from "drizzle-orm"
-import { revalidatePath, revalidateTag } from "next/cache"
+import { revalidatePath, updateTag } from "next/cache"
 import { getSetting, recalcProductAggregates } from "@/lib/db/queries"
-
-export async function getRefundParams(orderId: string) {
-    // Auth Check
-    const { auth } = await import("@/lib/auth")
-    const session = await auth()
-    const user = session?.user
-    const adminUsers = process.env.ADMIN_USERS?.toLowerCase().split(',') || []
-    if (!user || !user.username || !adminUsers.includes(user.username.toLowerCase())) {
-        throw new Error("Unauthorized")
-    }
-
-    // Get Order
-    const order = await db.query.orders.findFirst({
-        where: eq(orders.orderId, orderId)
-    })
-
-    if (!order) throw new Error("Order not found")
-    if (!order.tradeNo) throw new Error("Missing trade_no")
-
-    // Return params for client-side form submission
-    return {
-        pid: process.env.MERCHANT_ID!,
-        key: process.env.MERCHANT_KEY!,
-        trade_no: order.tradeNo,
-        out_trade_no: order.orderId,
-        money: Number(order.amount).toFixed(2)
-    }
-}
+import { checkAdmin } from "@/actions/admin"
 
 export async function markOrderRefunded(orderId: string) {
-    // Auth Check
-    const { auth } = await import("@/lib/auth")
-    const session = await auth()
-    const user = session?.user
-    const adminUsers = process.env.ADMIN_USERS?.toLowerCase().split(',') || []
-    if (!user || !user.username || !adminUsers.includes(user.username.toLowerCase())) {
-        throw new Error("Unauthorized")
-    }
+    await checkAdmin()
 
     // No transaction - D1 doesn't support SQL transactions in HTTP api easily
     const order = await db.query.orders.findFirst({ where: eq(orders.orderId, orderId) })
@@ -66,12 +32,37 @@ export async function markOrderRefunded(orderId: string) {
     } catch {
         reclaimCards = true
     }
-    if (reclaimCards && order.cardKey) {
-        const keys = order.cardKey.split('\n').map((k: string) => k.trim()).filter((k: string) => k !== '')
-        if (keys.length > 0) {
-            const uniqueKeys = Array.from(new Set(keys)) as string[]
-            await db.update(cards).set({ isUsed: false, usedAt: null })
-                .where(and(eq(cards.productId, order.productId), inArray(cards.cardKey, uniqueKeys)))
+    if (reclaimCards) {
+        if (order.productId) {
+            const product = await db.query.products.findFirst({
+                where: eq(products.id, order.productId),
+                columns: { isShared: true }
+            });
+            if (product?.isShared) {
+                reclaimCards = false;
+            }
+        }
+    }
+
+    if (reclaimCards) {
+        const rawIds = order.cardIds || '';
+        const parsedIds = rawIds
+            .split(',')
+            .map((id) => Number(id.trim()))
+            .filter((id) => Number.isFinite(id));
+
+        const uniqueIds = Array.from(new Set(parsedIds));
+
+        if (uniqueIds.length > 0) {
+            await db.update(cards).set({ isUsed: false, usedAt: null, reservedOrderId: null, reservedAt: null })
+                .where(inArray(cards.id, uniqueIds));
+        } else if (order.cardKey) {
+            const keys = order.cardKey.split('\n').map((k: string) => k.trim()).filter((k: string) => k !== '')
+            if (keys.length > 0) {
+                const uniqueKeys = Array.from(new Set(keys)) as string[]
+                await db.update(cards).set({ isUsed: false, usedAt: null, reservedOrderId: null, reservedAt: null })
+                    .where(and(eq(cards.productId, order.productId), inArray(cards.cardKey, uniqueKeys)))
+            }
         }
     }
 
@@ -95,7 +86,7 @@ export async function markOrderRefunded(orderId: string) {
         }
     }
     try {
-        revalidateTag('home:products')
+        updateTag('home:products')
     } catch {
         // best effort
     }
@@ -104,14 +95,7 @@ export async function markOrderRefunded(orderId: string) {
 }
 
 export async function proxyRefund(orderId: string) {
-    // Auth Check
-    const { auth } = await import("@/lib/auth")
-    const session = await auth()
-    const user = session?.user
-    const adminUsers = process.env.ADMIN_USERS?.toLowerCase().split(',') || []
-    if (!user || !user.username || !adminUsers.includes(user.username.toLowerCase())) {
-        throw new Error("Unauthorized")
-    }
+    await checkAdmin()
 
     const pid = process.env.MERCHANT_ID
     const key = process.env.MERCHANT_KEY

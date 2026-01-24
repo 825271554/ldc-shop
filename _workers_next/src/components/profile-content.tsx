@@ -9,12 +9,15 @@ import { Badge } from "@/components/ui/badge"
 import { Coins, Package, Clock, CheckCircle, ChevronRight, User, LogOut, Bell } from "lucide-react"
 import { signOut } from "next-auth/react"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
-import { updateProfileEmail } from "@/actions/profile"
-import { useEffect, useState } from "react"
+import { updateDesktopNotifications, updateProfileEmail } from "@/actions/profile"
+import { useEffect, useRef, useState } from "react"
 import { CheckInButton } from "@/components/checkin-button"
-import { getMyNotifications, markAllNotificationsRead, markNotificationRead } from "@/actions/user-notifications"
+import { clearMyNotifications, getMyNotifications, markAllNotificationsRead, markNotificationRead } from "@/actions/user-notifications"
+import { sendUserMessage } from "@/actions/user-messages"
+import { cn } from "@/lib/utils"
 
 interface ProfileContentProps {
     user: {
@@ -23,6 +26,7 @@ interface ProfileContentProps {
         username: string | null
         avatar: string | null
         email: string | null
+        trustLevel?: number
     }
     points: number
     checkinEnabled: boolean
@@ -40,9 +44,10 @@ interface ProfileContentProps {
         isRead: boolean | null
         createdAt: number | null
     }>
+    desktopNotificationsEnabled: boolean
 }
 
-export function ProfileContent({ user, points, checkinEnabled, orderStats, notifications: initialNotifications }: ProfileContentProps) {
+export function ProfileContent({ user, points, checkinEnabled, orderStats, notifications: initialNotifications, desktopNotificationsEnabled }: ProfileContentProps) {
     const { t } = useI18n()
     const [email, setEmail] = useState(user.email || '')
     const [savingEmail, setSavingEmail] = useState(false)
@@ -50,6 +55,14 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
     const [notifications, setNotifications] = useState(initialNotifications)
     const [markingAll, setMarkingAll] = useState(false)
     const [markingId, setMarkingId] = useState<number | null>(null)
+    const [clearing, setClearing] = useState(false)
+    const [expandedIds, setExpandedIds] = useState<number[]>([])
+    const [msgTitle, setMsgTitle] = useState("")
+    const [msgBody, setMsgBody] = useState("")
+    const [msgSending, setMsgSending] = useState(false)
+    const [desktopEnabled, setDesktopEnabled] = useState(desktopNotificationsEnabled)
+    const [desktopSaving, setDesktopSaving] = useState(false)
+    const notifiedIdsRef = useRef<Set<number>>(new Set())
 
     const unreadCount = notifications.filter((n) => !n.isRead).length
 
@@ -100,6 +113,74 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
         refresh()
     }, [])
 
+    useEffect(() => {
+        if (!desktopEnabled) return
+        if (typeof window === "undefined" || !("Notification" in window)) return
+        if (Notification.permission !== "granted") return
+
+        const unread = notifications.filter((n) => !n.isRead)
+        const fresh = unread.filter((n) => !notifiedIdsRef.current.has(n.id))
+        if (!fresh.length) return
+
+        fresh.slice(0, 3).forEach((n) => {
+            const data = parseNotificationData(n.data)
+            const params = data.params || {}
+            const title = t(n.titleKey, params)
+            const body = t(n.contentKey, params)
+            new Notification(title, { body })
+            notifiedIdsRef.current.add(n.id)
+        })
+    }, [desktopEnabled, notifications, t])
+
+    const ensureNotificationPermission = async () => {
+        if (typeof window === "undefined" || !("Notification" in window)) {
+            toast.error(t('profile.desktopNotifications.unsupported'))
+            return false
+        }
+        if (Notification.permission === "granted") return true
+        if (Notification.permission === "denied") {
+            toast.error(t('profile.desktopNotifications.permissionDenied'))
+            return false
+        }
+        const permission = await Notification.requestPermission()
+        if (permission !== "granted") {
+            toast.error(t('profile.desktopNotifications.permissionDenied'))
+            return false
+        }
+        return true
+    }
+
+    const handleToggleDesktopNotifications = async () => {
+        if (desktopSaving) return
+        const next = !desktopEnabled
+        if (next) {
+            const ok = await ensureNotificationPermission()
+            if (!ok) return
+        }
+        setDesktopSaving(true)
+        try {
+            const res = await updateDesktopNotifications(next)
+            if (res?.success) {
+                setDesktopEnabled(next)
+                toast.success(next ? t('profile.desktopNotifications.enabledToast') : t('profile.desktopNotifications.disabledToast'))
+                if (next) {
+                    notifiedIdsRef.current = new Set(notifications.map((n) => n.id))
+                }
+                if (next && typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+                    new Notification(t('profile.desktopNotifications.testTitle'), {
+                        body: t('profile.desktopNotifications.testBody')
+                    })
+                }
+            } else {
+                toast.error(res?.error ? t(res.error) : t('common.error'))
+            }
+        } catch {
+            toast.error(t('common.error'))
+        } finally {
+            setDesktopSaving(false)
+        }
+    }
+
     return (
         <main className="container py-8 max-w-2xl">
             {/* User Info */}
@@ -115,7 +196,10 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
                             {user.username && (
                                 <p className="text-sm text-muted-foreground">@{user.username}</p>
                             )}
-                            <p className="text-xs text-muted-foreground mt-1">ID: {user.id}</p>
+                            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                <span>ID: {user.id}</span>
+                                <Badge variant="outline" className="text-xs">{t('profile.trustLevel')}: {Number.isFinite(Number(user.trustLevel)) ? user.trustLevel : 0}</Badge>
+                            </div>
                         </div>
                     </div>
                 </CardContent>
@@ -127,16 +211,16 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
                     <CardTitle className="text-base">{t('profile.emailTitle')}</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <div className="space-y-2">
-                        <Label htmlFor="profile-email">{t('profile.emailLabel')}</Label>
+                    <div className="floating-field">
                         <Input
                             id="profile-email"
                             type="email"
-                            placeholder={t('profile.emailPlaceholder')}
+                            placeholder=" "
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             disabled={savingEmail}
                         />
+                        <Label htmlFor="profile-email" className="floating-label">{t('profile.emailLabel')}</Label>
                         <p className="text-xs text-muted-foreground">{t('profile.emailHint')}</p>
                         <Button
                             variant="outline"
@@ -159,6 +243,27 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
                             }}
                         >
                             {t('profile.emailSave')}
+                        </Button>
+                    </div>
+                </CardContent>
+            </Card>
+
+            {/* Desktop Notifications */}
+            <Card className="mb-6">
+                <CardHeader className="pb-2">
+                    <CardTitle className="text-base">{t('profile.desktopNotifications.title')}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <div className="flex items-center justify-between gap-4">
+                        <p className="text-sm text-muted-foreground">{t('profile.desktopNotifications.desc')}</p>
+                        <Button
+                            type="button"
+                            variant={desktopEnabled ? "default" : "outline"}
+                            size="sm"
+                            onClick={handleToggleDesktopNotifications}
+                            disabled={desktopSaving}
+                        >
+                            {desktopEnabled ? t('profile.desktopNotifications.enabled') : t('profile.desktopNotifications.disabled')}
                         </Button>
                     </div>
                 </CardContent>
@@ -235,31 +340,58 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
                             )}
                         </span>
                         {notifications.length > 0 && (
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled={markingAll || unreadCount === 0}
-                                onClick={async () => {
-                                    if (markingAll || unreadCount === 0) return
-                                    setMarkingAll(true)
-                                    try {
-                                        const res = await markAllNotificationsRead()
-                                    if (res?.success) {
-                                        setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })))
-                                        emitNotificationUpdate()
-                                        toast.success(t('profile.inboxMarked'))
-                                    } else {
-                                        toast.error(t('common.error'))
-                                    }
-                                    } catch {
-                                        toast.error(t('common.error'))
-                                    } finally {
-                                        setMarkingAll(false)
-                                    }
-                                }}
-                            >
-                                {t('profile.markAllRead')}
-                            </Button>
+                            <div className="flex items-center gap-2">
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled={markingAll || unreadCount === 0}
+                                    onClick={async () => {
+                                        if (markingAll || unreadCount === 0) return
+                                        setMarkingAll(true)
+                                        try {
+                                            const res = await markAllNotificationsRead()
+                                            if (res?.success) {
+                                                setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })))
+                                                emitNotificationUpdate()
+                                                toast.success(t('profile.inboxMarked'))
+                                            } else {
+                                                toast.error(t('common.error'))
+                                            }
+                                        } catch {
+                                            toast.error(t('common.error'))
+                                        } finally {
+                                            setMarkingAll(false)
+                                        }
+                                    }}
+                                >
+                                    {t('profile.markAllRead')}
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled={clearing}
+                                    onClick={async () => {
+                                        if (clearing) return
+                                        setClearing(true)
+                                        try {
+                                            const res = await clearMyNotifications()
+                                            if (res?.success) {
+                                                setNotifications([])
+                                                emitNotificationUpdate()
+                                                toast.success(t('profile.inboxCleared'))
+                                            } else {
+                                                toast.error(t('common.error'))
+                                            }
+                                        } catch {
+                                            toast.error(t('common.error'))
+                                        } finally {
+                                            setClearing(false)
+                                        }
+                                    }}
+                                >
+                                    {t('profile.clearInbox')}
+                                </Button>
+                            </div>
                         )}
                     </CardTitle>
                 </CardHeader>
@@ -271,9 +403,18 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
                             {notifications.map((n) => {
                                 const meta = parseNotificationData(n.data)
                                 const params = meta.params || {}
-                                const title = t(n.titleKey, params)
-                                const content = t(n.contentKey, params)
+                                const title = typeof (meta as any).title === "string" && (meta as any).title.trim()
+                                    ? (meta as any).title
+                                    : t(n.titleKey, params)
+                                const content = typeof (meta as any).body === "string" && (meta as any).body.trim()
+                                    ? (meta as any).body
+                                    : t(n.contentKey, params)
                                 const time = n.createdAt ? new Date(n.createdAt).toLocaleString() : '-'
+                                const isExpanded = expandedIds.includes(n.id)
+                                const contentClass = cn(
+                                    "text-sm text-muted-foreground mt-1 break-words whitespace-pre-wrap",
+                                    !isExpanded ? "line-clamp-2" : ""
+                                )
                                 const body = (
                                     <div className={`rounded-lg border p-3 ${n.isRead ? "bg-muted/30" : "bg-primary/5 border-primary/30"}`}>
                                         <div className="flex items-start justify-between gap-3">
@@ -286,7 +427,7 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
                                                         </Badge>
                                                     )}
                                                 </div>
-                                                <p className="text-sm text-muted-foreground mt-1 break-words">{content}</p>
+                                                <p className={contentClass}>{content}</p>
                                                 <p className="text-xs text-muted-foreground mt-2">{time}</p>
                                             </div>
                                             {meta.href && (
@@ -312,6 +453,9 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
                                         key={n.id}
                                         onClick={() => {
                                             if (!n.isRead) void handleMarkRead(n.id)
+                                            setExpandedIds((prev) =>
+                                                prev.includes(n.id) ? prev.filter((x) => x !== n.id) : [...prev, n.id]
+                                            )
                                         }}
                                     >
                                         {body}
@@ -320,6 +464,61 @@ export function ProfileContent({ user, points, checkinEnabled, orderStats, notif
                             })}
                         </div>
                     )}
+                </CardContent>
+            </Card>
+
+            {/* Contact Admin */}
+            <Card className="mb-6">
+                <CardHeader className="pb-2">
+                    <CardTitle className="text-base">{t('profile.messages.title')}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                    <div className="grid gap-2">
+                        <Label htmlFor="msg-title">{t('profile.messages.titleLabel')}</Label>
+                        <Input
+                            id="msg-title"
+                            value={msgTitle}
+                            onChange={(e) => setMsgTitle(e.target.value)}
+                            placeholder={t('profile.messages.titlePlaceholder')}
+                            disabled={msgSending}
+                        />
+                    </div>
+                    <div className="grid gap-2">
+                        <Label htmlFor="msg-body">{t('profile.messages.bodyLabel')}</Label>
+                        <Textarea
+                            id="msg-body"
+                            className="min-h-[120px]"
+                            placeholder={t('profile.messages.bodyPlaceholder')}
+                            value={msgBody}
+                            onChange={(e) => setMsgBody(e.target.value)}
+                            disabled={msgSending}
+                        />
+                    </div>
+                    <div className="flex justify-end">
+                        <Button
+                            disabled={msgSending}
+                            onClick={async () => {
+                                if (msgSending) return
+                                setMsgSending(true)
+                                try {
+                                    const res = await sendUserMessage(msgTitle, msgBody)
+                                    if (res?.success) {
+                                        toast.success(t('profile.messages.sent'))
+                                        setMsgTitle("")
+                                        setMsgBody("")
+                                    } else {
+                                        toast.error(res?.error ? t(res.error) : t('common.error'))
+                                    }
+                                } catch {
+                                    toast.error(t('common.error'))
+                                } finally {
+                                    setMsgSending(false)
+                                }
+                            }}
+                        >
+                            {msgSending ? t('common.processing') : t('profile.messages.send')}
+                        </Button>
+                    </div>
                 </CardContent>
             </Card>
 

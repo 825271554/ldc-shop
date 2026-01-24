@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { TrendingUp, ShoppingCart, CreditCard, Package, Users } from "lucide-react"
-import { saveShopName, saveShopDescription, saveShopLogo, saveShopFooter, saveThemeColor, saveLowStockThreshold, saveCheckinReward, saveCheckinEnabled, saveNoIndex, saveRefundReclaimCards } from "@/actions/admin"
+import { saveShopName, saveShopDescription, saveShopLogo, saveShopFooter, saveThemeColor, saveLowStockThreshold, saveCheckinReward, saveCheckinEnabled, saveWishlistEnabled, saveNoIndex, saveRefundReclaimCards, saveRegistryHideNav } from "@/actions/admin"
 import { checkForUpdates } from "@/actions/update-check"
 import { joinRegistry } from "@/actions/registry"
 import { toast } from "sonner"
@@ -31,8 +31,10 @@ interface AdminSettingsContentProps {
     lowStockThreshold: number
     checkinReward: number
     checkinEnabled: boolean
+    wishlistEnabled: boolean
     noIndexEnabled: boolean
     refundReclaimCards: boolean
+    registryHideNav: boolean
     registryOptIn: boolean
     registryEnabled: boolean
 }
@@ -61,7 +63,7 @@ const THEME_COLORS = [
     { value: 'pink', hue: 330 },
 ]
 
-export function AdminSettingsContent({ stats, shopName, shopDescription, shopLogo, shopFooter, themeColor, visitorCount, lowStockThreshold, checkinReward, checkinEnabled, noIndexEnabled, refundReclaimCards, registryOptIn, registryEnabled }: AdminSettingsContentProps) {
+export function AdminSettingsContent({ stats, shopName, shopDescription, shopLogo, shopFooter, themeColor, visitorCount, lowStockThreshold, checkinReward, checkinEnabled, wishlistEnabled, noIndexEnabled, refundReclaimCards, registryHideNav, registryOptIn, registryEnabled }: AdminSettingsContentProps) {
     const { t } = useI18n()
 
     // State
@@ -81,6 +83,8 @@ export function AdminSettingsContent({ stats, shopName, shopDescription, shopLog
     const [savingReward, setSavingReward] = useState(false)
     const [enabledCheckin, setEnabledCheckin] = useState(checkinEnabled)
     const [savingEnabled, setSavingEnabled] = useState(false)
+    const [enabledWishlist, setEnabledWishlist] = useState(wishlistEnabled)
+    const [savingWishlist, setSavingWishlist] = useState(false)
     const [enabledNoIndex, setEnabledNoIndex] = useState(noIndexEnabled)
     const [savingNoIndex, setSavingNoIndex] = useState(false)
     const [refundReclaimEnabled, setRefundReclaimEnabled] = useState(refundReclaimCards)
@@ -89,6 +93,8 @@ export function AdminSettingsContent({ stats, shopName, shopDescription, shopLog
     const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
     const [submittingRegistry, setSubmittingRegistry] = useState(false)
     const [registryJoined, setRegistryJoined] = useState(registryOptIn)
+    const [hideRegistryNav, setHideRegistryNav] = useState(registryHideNav)
+    const [savingRegistryNav, setSavingRegistryNav] = useState(false)
 
     const handleSaveShopName = async () => {
         const trimmed = shopNameValue.trim()
@@ -191,6 +197,32 @@ export function AdminSettingsContent({ stats, shopName, shopDescription, shopLog
             toast.error(e.message)
         } finally {
             setSavingNoIndex(false)
+        }
+    }
+
+    const handleToggleWishlist = async (checked: boolean) => {
+        setSavingWishlist(true)
+        try {
+            await saveWishlistEnabled(checked)
+            setEnabledWishlist(checked)
+            toast.success(t('common.success'))
+        } catch (e: any) {
+            toast.error(e.message)
+        } finally {
+            setSavingWishlist(false)
+        }
+    }
+
+    const handleToggleRegistryNav = async (checked: boolean) => {
+        setSavingRegistryNav(true)
+        try {
+            await saveRegistryHideNav(checked)
+            setHideRegistryNav(checked)
+            toast.success(t('common.success'))
+        } catch (e: any) {
+            toast.error(e.message)
+        } finally {
+            setSavingRegistryNav(false)
         }
     }
 
@@ -322,14 +354,16 @@ export function AdminSettingsContent({ stats, shopName, shopDescription, shopLog
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="grid gap-2 md:max-w-xl">
-                        <Label htmlFor="shop-name">{t('admin.settings.shopName')}</Label>
                         <div className="flex gap-2">
-                            <Input
-                                id="shop-name"
-                                value={shopNameValue}
-                                onChange={(e) => setShopNameValue(e.target.value)}
-                                placeholder={t('admin.settings.shopNamePlaceholder')}
-                            />
+                            <div className="floating-field flex-1 min-w-0">
+                                <Input
+                                    id="shop-name"
+                                    value={shopNameValue}
+                                    onChange={(e) => setShopNameValue(e.target.value)}
+                                    placeholder=" "
+                                />
+                                <Label htmlFor="shop-name" className="floating-label">{t('admin.settings.shopName')}</Label>
+                            </div>
                             <Button onClick={handleSaveShopName} disabled={savingShopName}>
                                 {savingShopName ? t('common.processing') : t('common.save')}
                             </Button>
@@ -337,28 +371,32 @@ export function AdminSettingsContent({ stats, shopName, shopDescription, shopLog
                         <p className="text-xs text-muted-foreground">{t('admin.settings.shopNameHint')}</p>
                     </div>
                     <div className="grid gap-2 md:max-w-xl">
-                        <Label htmlFor="shop-desc">{t('admin.settings.shopDescription')}</Label>
                         <div className="flex gap-2">
-                            <Input
-                                id="shop-desc"
-                                value={shopDescValue}
-                                onChange={(e) => setShopDescValue(e.target.value)}
-                                placeholder={t('admin.settings.shopDescPlaceholder')}
-                            />
+                            <div className="floating-field flex-1 min-w-0">
+                                <Input
+                                    id="shop-desc"
+                                    value={shopDescValue}
+                                    onChange={(e) => setShopDescValue(e.target.value)}
+                                    placeholder=" "
+                                />
+                                <Label htmlFor="shop-desc" className="floating-label">{t('admin.settings.shopDescription')}</Label>
+                            </div>
                             <Button variant="outline" onClick={handleSaveShopDesc} disabled={savingShopDesc}>
                                 {savingShopDesc ? t('common.processing') : t('common.save')}
                             </Button>
                         </div>
                     </div>
                     <div className="grid gap-2 md:max-w-xl">
-                        <Label htmlFor="shop-logo">{t('admin.settings.shopLogo')}</Label>
                         <div className="flex gap-2">
-                            <Input
-                                id="shop-logo"
-                                value={shopLogoValue}
-                                onChange={(e) => setShopLogoValue(e.target.value)}
-                                placeholder={t('admin.settings.shopLogoPlaceholder')}
-                            />
+                            <div className="floating-field flex-1 min-w-0">
+                                <Input
+                                    id="shop-logo"
+                                    value={shopLogoValue}
+                                    onChange={(e) => setShopLogoValue(e.target.value)}
+                                    placeholder=" "
+                                />
+                                <Label htmlFor="shop-logo" className="floating-label">{t('admin.settings.shopLogo')}</Label>
+                            </div>
                             <Button variant="outline" onClick={handleSaveShopLogo} disabled={savingShopLogo}>
                                 {savingShopLogo ? t('common.processing') : t('common.save')}
                             </Button>
@@ -372,15 +410,17 @@ export function AdminSettingsContent({ stats, shopName, shopDescription, shopLog
                         )}
                     </div>
                     <div className="grid gap-2 md:max-w-xs">
-                        <Label htmlFor="low-stock">{t('admin.settings.lowStockThreshold')}</Label>
                         <div className="flex gap-2">
-                            <Input
-                                id="low-stock"
-                                type="number"
-                                value={thresholdValue}
-                                onChange={(e) => setThresholdValue(e.target.value)}
-                                placeholder="5"
-                            />
+                            <div className="floating-field flex-1 min-w-0">
+                                <Input
+                                    id="low-stock"
+                                    type="number"
+                                    value={thresholdValue}
+                                    onChange={(e) => setThresholdValue(e.target.value)}
+                                    placeholder=" "
+                                />
+                                <Label htmlFor="low-stock" className="floating-label">{t('admin.settings.lowStockThreshold')}</Label>
+                            </div>
                             <Button variant="outline" onClick={handleSaveThreshold} disabled={savingThreshold}>
                                 {savingThreshold ? t('common.processing') : t('common.save')}
                             </Button>
@@ -410,15 +450,17 @@ export function AdminSettingsContent({ stats, shopName, shopDescription, shopLog
                     </div>
                     {enabledCheckin && (
                         <div className="grid gap-2 md:max-w-xs">
-                            <Label htmlFor="checkin-reward">{t('admin.settings.checkin.rewardTooltip')}</Label>
                             <div className="flex gap-2">
-                                <Input
-                                    id="checkin-reward"
-                                    type="number"
-                                    value={rewardValue}
-                                    onChange={(e) => setRewardValue(e.target.value)}
-                                    placeholder="10"
-                                />
+                                <div className="floating-field flex-1 min-w-0">
+                                    <Input
+                                        id="checkin-reward"
+                                        type="number"
+                                        value={rewardValue}
+                                        onChange={(e) => setRewardValue(e.target.value)}
+                                        placeholder=" "
+                                    />
+                                    <Label htmlFor="checkin-reward" className="floating-label">{t('admin.settings.checkin.rewardTooltip')}</Label>
+                                </div>
                                 <Button variant="outline" onClick={handleSaveReward} disabled={savingReward}>
                                     {savingReward ? t('common.processing') : t('common.save')}
                                 </Button>
@@ -513,6 +555,64 @@ export function AdminSettingsContent({ stats, shopName, shopDescription, shopLog
                 </CardContent>
             </Card>
 
+            {registryEnabled && (
+                <Card>
+                    <CardHeader>
+                        <CardTitle>{t('registry.title')}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                        <p className="text-sm text-muted-foreground">{t('registry.description')}</p>
+                        <div className="flex flex-wrap items-center gap-3">
+                            <Button onClick={handleRegistrySubmit} disabled={submittingRegistry}>
+                                {registryJoined ? t('registry.resubmit') : t('registry.joinNow')}
+                            </Button>
+                            <span className={registryJoined ? "text-green-600 text-sm" : "text-muted-foreground text-sm"}>
+                                {registryJoined ? t('registry.statusJoined') : t('registry.statusNotJoined')}
+                            </span>
+                        </div>
+                        <div className="space-y-2 pt-2">
+                            <div className="flex items-center justify-between gap-4">
+                                <Label htmlFor="registry-hide-nav" className="cursor-pointer">
+                                    {t('registry.hideNavLabel')}
+                                </Label>
+                                <Button
+                                    id="registry-hide-nav"
+                                    variant={registryJoined ? "outline" : hideRegistryNav ? "default" : "outline"}
+                                    size="sm"
+                                    onClick={() => handleToggleRegistryNav(!hideRegistryNav)}
+                                    disabled={savingRegistryNav || registryJoined}
+                                    className={!registryJoined && hideRegistryNav ? "bg-slate-900 hover:bg-slate-800 text-white" : ""}
+                                >
+                                    {registryJoined ? t('registry.hideNavDisabled') : hideRegistryNav ? t('registry.hideNavEnabled') : t('registry.hideNavDisabled')}
+                                </Button>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                {registryJoined ? t('registry.hideNavLockedHint') : t('registry.hideNavHint')}
+                            </p>
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
+
+            {/* Wishlist Settings */}
+            <Card>
+                <CardContent className="space-y-2">
+                    <div className="flex items-center gap-4">
+                        <Label htmlFor="wishlist-enable" className="cursor-pointer">{t('admin.settings.wishlist.title')}</Label>
+                        <Button
+                            id="wishlist-enable"
+                            variant={enabledWishlist ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => handleToggleWishlist(!enabledWishlist)}
+                            disabled={savingWishlist}
+                        >
+                            {enabledWishlist ? t('admin.settings.wishlist.enabled') : t('admin.settings.wishlist.disabled')}
+                        </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{t('admin.settings.wishlist.hint')}</p>
+                </CardContent>
+            </Card>
+
             {/* SEO Settings */}
             <Card>
                 <CardHeader>
@@ -575,25 +675,6 @@ export function AdminSettingsContent({ stats, shopName, shopDescription, shopLog
                     )}
                 </CardContent>
             </Card>
-
-            {registryEnabled && (
-                <Card>
-                    <CardHeader>
-                        <CardTitle>{t('registry.title')}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                        <p className="text-sm text-muted-foreground">{t('registry.description')}</p>
-                        <div className="flex flex-wrap items-center gap-3">
-                            <Button onClick={handleRegistrySubmit} disabled={submittingRegistry}>
-                                {registryJoined ? t('registry.resubmit') : t('registry.joinNow')}
-                            </Button>
-                            <span className={registryJoined ? "text-green-600 text-sm" : "text-muted-foreground text-sm"}>
-                                {registryJoined ? t('registry.statusJoined') : t('registry.statusNotJoined')}
-                            </span>
-                        </div>
-                    </CardContent>
-                </Card>
-            )}
 
         </div>
     )

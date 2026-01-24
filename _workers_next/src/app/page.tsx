@@ -1,42 +1,10 @@
-import { getActiveProductCategories, getCategories, getProductRatings, getVisitorCount, getUserPendingOrders, searchActiveProducts } from "@/lib/db/queries";
+import { getActiveProductCategories, getCategories, getActiveProducts, getVisitorCount, getUserPendingOrders, getSetting, getLiveCardStats } from "@/lib/db/queries";
 import { getActiveAnnouncement } from "@/actions/settings";
 import { auth } from "@/lib/auth";
 import { HomeContent } from "@/components/home-content";
-import { unstable_cache } from "next/cache";
-
-const CACHE_TTL_SECONDS = 60 * 60 * 24;
-const TAG_PRODUCTS = "home:products";
-const TAG_RATINGS = "home:ratings";
-const TAG_ANNOUNCEMENT = "home:announcement";
-const TAG_VISITORS = "home:visitors";
-const TAG_CATEGORIES = "home:categories";
-const TAG_PRODUCT_CATEGORIES = "home:product-categories";
+import { INFINITE_STOCK } from "@/lib/constants";
 
 const PAGE_SIZE = 24;
-
-const getCachedAnnouncement = unstable_cache(
-  async () => getActiveAnnouncement(),
-  ["active-announcement"],
-  { revalidate: CACHE_TTL_SECONDS, tags: [TAG_ANNOUNCEMENT] }
-);
-
-const getCachedVisitorCount = unstable_cache(
-  async () => getVisitorCount(),
-  ["visitor-count"],
-  { revalidate: CACHE_TTL_SECONDS, tags: [TAG_VISITORS] }
-);
-
-const getCachedCategories = unstable_cache(
-  async () => getCategories(),
-  ["categories"],
-  { revalidate: CACHE_TTL_SECONDS, tags: [TAG_CATEGORIES] }
-);
-
-const getCachedProductCategories = unstable_cache(
-  async () => getActiveProductCategories(),
-  ["active-product-categories"],
-  { revalidate: CACHE_TTL_SECONDS, tags: [TAG_PRODUCT_CATEGORIES, TAG_PRODUCTS] }
-);
 
 function stripMarkdown(input: string): string {
   return input
@@ -59,23 +27,32 @@ export default async function Home({
   const sort = (typeof resolved.sort === 'string' ? resolved.sort : 'default').trim();
   const page = Math.max(1, Number.parseInt(typeof resolved.page === 'string' ? resolved.page : '1', 10) || 1);
 
+  const session = await auth()
+  const isLoggedIn = !!session?.user
+  const trustLevel = Number.isFinite(Number(session?.user?.trustLevel)) ? Number(session?.user?.trustLevel) : 0
+
   // Run all independent queries in parallel for better performance
-  const [session, productsResult, announcement, visitorCount, categoryConfig, productCategories] = await Promise.all([
-    auth(),
-    unstable_cache(
-      async () => searchActiveProducts({ q, category, sort, page, pageSize: PAGE_SIZE }),
-      ["search-active-products", q, category || 'all', sort, String(page), String(PAGE_SIZE)],
-      { revalidate: CACHE_TTL_SECONDS, tags: [TAG_PRODUCTS] }
-    )().catch(() => ({ items: [], total: 0, page, pageSize: PAGE_SIZE })),
-    getCachedAnnouncement().catch(() => null),
-    getCachedVisitorCount().catch(() => 0),
-    getCachedCategories().catch(() => []),
-    getCachedProductCategories().catch(() => [])
+  const [products, announcement, visitorCount, categoryConfig, productCategories, wishlistEnabled] = await Promise.all([
+    getActiveProducts({ isLoggedIn, trustLevel }).catch(() => []),
+    getActiveAnnouncement().catch(() => null),
+    getVisitorCount().catch(() => 0),
+    getCategories().catch(() => []),
+    getActiveProductCategories({ isLoggedIn, trustLevel }).catch(() => []),
+    (async () => {
+      try {
+        return (await getSetting('wishlist_enabled')) === 'true'
+      } catch {
+        return false
+      }
+    })()
   ]);
 
-  const products = productsResult.items || [];
-  const total = productsResult.total || 0;
 
+  const total = products.length;
+
+  const liveStats = await getLiveCardStats(products.map((p: any) => p.id)).catch(() => new Map());
+
+  /* REMOVED: Separate ratings fetch - using pre-computed values in product table
   const productIds = products.map((p: any) => p.id).filter(Boolean);
   const sortedIds = [...productIds].sort();
   let ratingsMap = new Map<string, { average: number; count: number }>();
@@ -88,16 +65,23 @@ export default async function Home({
   } catch {
     // Reviews table might not exist yet
   }
+  */
 
   const productsWithRatings = products.map((p: any) => {
-    const rating = ratingsMap.get(p.id) || { average: 0, count: 0 };
+    const stat = liveStats.get(p.id) || { unused: 0, available: 0, locked: 0 };
+    const available = p.isShared
+      ? (stat.unused > 0 ? INFINITE_STOCK : 0)
+      : stat.available;
+    const locked = stat.locked;
+    const stockTotal = available >= INFINITE_STOCK ? INFINITE_STOCK : (available + locked);
+    // const rating = ratingsMap.get(p.id) || { average: 0, count: 0 };
     return {
       ...p,
-      stockCount: p.stock + (p.locked || 0),
+      stockCount: stockTotal,
       soldCount: p.sold || 0,
       descriptionPlain: stripMarkdown(p.description || ''),
-      rating: rating.average,
-      reviewCount: rating.count
+      rating: Number(p.rating || 0),
+      reviewCount: Number(p.reviewCount || 0)
     };
   });
 
@@ -124,6 +108,7 @@ export default async function Home({
     categories={categories}
     categoryConfig={categoryConfig}
     pendingOrders={pendingOrders}
+    wishlistEnabled={wishlistEnabled}
     filters={{ q, category: category || null, sort }}
     pagination={{ page, pageSize: PAGE_SIZE, total }}
   />;

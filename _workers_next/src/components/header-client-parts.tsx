@@ -7,7 +7,7 @@ import { LanguageSwitcher } from "@/components/language-switcher"
 import { ShoppingBag } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { usePathname, useRouter } from "next/navigation"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { getMyUnreadCount } from "@/actions/user-notifications"
 
@@ -35,18 +35,20 @@ export function HeaderLogo({ adminName, shopNameOverride, shopLogoOverride }: { 
     )
 }
 
-export function HeaderNav({ isAdmin, isLoggedIn }: { isAdmin: boolean; isLoggedIn: boolean }) {
+export function HeaderNav({ isAdmin, isLoggedIn, showNav = true }: { isAdmin: boolean; isLoggedIn: boolean; showNav?: boolean }) {
     const { t } = useI18n()
     const isZh = t('common.myOrders').includes('订单')
 
     return (
         <div className="hidden md:flex items-center gap-6">
-            <Link
-                href="/nav"
-                className="flex items-center text-sm font-medium text-muted-foreground hover:text-primary transition-colors duration-200 hover:-translate-y-0.5"
-            >
-                {t('common.navigator')}
-            </Link>
+            {showNav && (
+                <Link
+                    href="/nav"
+                    className="flex items-center text-sm font-medium text-muted-foreground hover:text-primary transition-colors duration-200 hover:-translate-y-0.5"
+                >
+                    {t('common.navigator')}
+                </Link>
+            )}
             {isLoggedIn && (
                 <>
                     <Link
@@ -93,14 +95,16 @@ export function HeaderSearch({ className }: { className?: string }) {
     )
 }
 
-export function HeaderUserMenuItems({ isAdmin }: { isAdmin: boolean }) {
+export function HeaderUserMenuItems({ isAdmin, showNav = true }: { isAdmin: boolean; showNav?: boolean }) {
     const { t } = useI18n()
 
     return (
         <>
-            <DropdownMenuItem asChild>
-                <Link href="/nav">{t('common.navigator')}</Link>
-            </DropdownMenuItem>
+            {showNav && (
+                <DropdownMenuItem asChild>
+                    <Link href="/nav">{t('common.navigator')}</Link>
+                </DropdownMenuItem>
+            )}
             <DropdownMenuItem asChild>
                 <Link href="/profile" className="flex w-full items-center justify-between gap-2">
                     <span>{t('common.myOrders').includes('订单') ? "个人中心" : "Profile"}</span>
@@ -118,20 +122,31 @@ export function HeaderUserMenuItems({ isAdmin }: { isAdmin: boolean }) {
 
 export { LanguageSwitcher }
 
-export function HeaderUnreadBadge({ initialCount = 0, className }: { initialCount?: number; className?: string }) {
+export function HeaderUnreadBadge({ initialCount = 0, desktopEnabled = false, className }: { initialCount?: number; desktopEnabled?: boolean; className?: string }) {
+    const { t } = useI18n()
     const [count, setCount] = useState(initialCount)
     const pathname = usePathname()
+    const prevCountRef = useRef(initialCount)
 
     const refresh = useCallback(async () => {
         try {
             const res = await getMyUnreadCount()
             if (res?.success) {
-                setCount(res.count || 0)
+                const nextCount = res.count || 0
+                setCount(nextCount)
+                if (desktopEnabled && typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+                    if (nextCount > prevCountRef.current) {
+                        new Notification(t('profile.desktopNotifications.newTitle'), {
+                            body: t('profile.desktopNotifications.newBody', { count: nextCount })
+                        })
+                    }
+                }
+                prevCountRef.current = nextCount
             }
         } catch {
             // ignore
         }
-    }, [])
+    }, [desktopEnabled, t])
 
     useEffect(() => {
         refresh()

@@ -105,6 +105,7 @@ export async function GET(req: Request) {
         status: o.status,
         tradeNo: includeSecrets ? o.tradeNo : null,
         cardKey: includeSecrets ? o.cardKey : null,
+        cardIds: includeSecrets ? o.cardIds : null,
         createdAt: o.createdAt,
         paidAt: o.paidAt,
         deliveredAt: o.deliveredAt,
@@ -130,6 +131,7 @@ export async function GET(req: Request) {
           "status",
           "tradeNo",
           "cardKey",
+          "cardIds",
           "createdAt",
           "paidAt",
           "deliveredAt",
@@ -157,6 +159,7 @@ export async function GET(req: Request) {
         isActive: p.isActive ?? true,
         sortOrder: p.sortOrder ?? 0,
         purchaseLimit: p.purchaseLimit,
+        visibilityLevel: p.visibilityLevel ?? -1,
         stock: p.stock,
         sold: p.sold,
       }))
@@ -180,6 +183,7 @@ export async function GET(req: Request) {
           "isActive",
           "sortOrder",
           "purchaseLimit",
+          "visibilityLevel",
           "stock",
           "sold",
         ]
